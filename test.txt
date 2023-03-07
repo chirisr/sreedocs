@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Set the necessary environment variables for the TFE API
+export TFE_TOKEN="your-tfe-token"
+export TFE_ORGANIZATION="your-tfe-organization"
+export TFE_WORKSPACE="your-tfe-workspace"
+
+# Create a new plan in the TFE workspace
+plan_id=$(curl \
+  --header "Authorization: Bearer $TFE_TOKEN" \
+  --header "Content-Type: application/vnd.api+json" \
+  --request POST \
+  --data '{"data":{"type":"plans"}}' \
+  https://app.terraform.io/api/v2/workspaces/$TFE_ORGANIZATION/$TFE_WORKSPACE/plans \
+  | jq -r '.data.id')
+
+echo "Created plan $plan_id"
+
+# Wait for the plan to complete
+while true; do
+  status=$(curl \
+    --header "Authorization: Bearer $TFE_TOKEN" \
+    --request GET \
+    https://app.terraform.io/api/v2/plans/$plan_id \
+    | jq -r '.data.attributes.status')
+
+  case $status in
+    "pending"|"planning"|"planned"|"costing"|"policy_check"|"policy_override")
+      echo "Plan status: $status"
+      sleep 5
+      ;;
+    "planned_and_finished")
+      echo "Plan completed successfully"
+      break
+      ;;
+    *)
+      echo "Plan failed with status: $status"
+      exit 1
+      ;;
+  esac
+done
+
+# Apply the plan
+apply_id=$(curl \
+  --header "Authorization: Bearer $TFE_TOKEN" \
+  --header "Content-Type: application/vnd.api+json" \
+  --request POST \
+  --data "{\"data\":{\"attributes\":{\"is-destroy\":false},\"type\":\"apply\"}}" \
+  https://app.terraform.io/api/v2/plans/$plan_id/actions/apply \
+  | jq -r '.data.id')
+
+echo "Started apply $apply_id"
+
+# Wait for the apply to complete
+while true; do
+  status=$(curl \
+    --header "Authorization: Bearer $TFE_TOKEN" \
+    --request GET \
+    https://app.terraform.io/api/v2/applies/$apply_id \
+    | jq -r '.data.attributes.status')
+
+  case $status in
+    "pending"|"planning"|"running")
+      echo "Apply status: $status"
+      sleep 5
+      ;;
+    "finished")
+      echo "Apply completed successfully"
+      break
+      ;;
+    *)
+      echo "Apply failed with status: $status"
+      exit 1
+      ;;
+  esac
+done
+
+# Get the final plan status
+status=$(curl \
+  --header "Authorization: Bearer $TFE_TOKEN" \
+  --request GET \
+  https://app.terraform.io/api/v2/plans/$plan_id \
+  | jq -r '.data.attributes.status')
+
+echo "Final plan status: $status"
