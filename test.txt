@@ -1,354 +1,56 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      containers:
-        - name: main-app
-          image: my-app-image:latest
-          ports:
-            - containerPort: 8080
-          env:
-            - name: OAUTH_SERVER_URL
-              value: "http://localhost:8181/oauth"
-        - name: oauth-sidecar
-          image: oauth-sidecar-image:latest
-          ports:
-            - containerPort: 8181
-          env:
-            - name: OAUTH_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: oauth-secrets
-                  key: client-id
-            - name: OAUTH_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: oauth-secrets
-                  key: client-secret
-          volumeMounts:
-            - name: oauth-config
-              mountPath: /etc/oauth
-      volumes:
-        - name: oauth-config
-          secret:
-            secretName: oauth-config-secret
----
-#Update Sidecar Container Configuration:
-
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: oauth-sidecar
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: oauth-sidecar
-  template:
-    metadata:
-      labels:
-        app: oauth-sidecar
-    spec:
-      containers:
-        - name: oauth-sidecar
-          image: oauth-sidecar-image:latest
-          ports:
-            - containerPort: 443
-          volumeMounts:
-            - name: tls-certs
-              mountPath: /etc/ssl/certs
-              readOnly: true
-      volumes:
-        - name: tls-certs
-          secret:
-            secretName: tls-certs-secret
----
-#Create OpenShift Route
-
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: oauth-route
-spec:
-  to:
-    kind: Service
-    name: oauth-service
-  tls:
-    termination: edge
-    certificate: |-
-      -----BEGIN CERTIFICATE-----
-      [Base64-encoded SSL certificate]
-      -----END CERTIFICATE-----
-    key: |-
-      -----BEGIN RSA PRIVATE KEY-----
-      [Base64-encoded SSL private key]
-      -----END RSA PRIVATE KEY-----
----
-#CPU Allocation:
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      containers:
-        - name: my-app-container
-          image: my-app-image:latest
-          ports:
-            - containerPort: 8080
-          resources:
-            requests:
-              memory: "128Mi"
-              cpu: "250m"  # 0.25 CPU
-            limits:
-              memory: "256Mi"
-              cpu: "500m"  # 0.5 CPU
-        - name: oauth-sidecar
-          image: oauth-sidecar-image:latest
-          ports:
-            - containerPort: 8181
-          resources:
-            requests:
-              memory: "64Mi"
-              cpu: "100m"  # 0.1 CPU
-            limits:
-              memory: "128Mi"
-              cpu: "200m"  # 0.2 CPU
-          env:
-            - name: OAUTH_CLIENT_ID
-              value: "your_client_id"
-            - name: OAUTH_CLIENT_SECRET
-              value: "your_client_secret"
-            - name: OAUTH_REDIRECT_URL
-              value: "http://oauth-sidecar/callback"
-            # Other OAuth configurations
----
-#OAuth is typically used as an authentication and authorization protocol for API access, allowing users to grant limited access to their resources without sharing their credentials directly. It's commonly used in scenarios where one service (the client) needs to access resources on another service (the server) on behalf of a user.
-
-#Now, when you mention "OAuth as sidecar," are you referring to using OAuth within a microservices architecture where the OAuth functionality is implemented as a separate service (the sidecar) rather than being directly integrated into each microservice?
-
-#For Kubernetes deployments, you can configure an OAuth sidecar using a configuration file like a YAML file. Here's an example of what a bc.yaml file might look like for setting up an OAuth sidecar using Istio:
-#n this YAML file:
-
-#We define a Kubernetes Service (my-service) to expose our application.
-#We define a Deployment (my-app) for our application with three replicas.
-#The application container (my-app-container) runs our main application.
-#The OAuth sidecar container (oauth-sidecar) runs the OAuth functionality.
-#The sidecar container has environment variables (OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URL, etc.) configured for OAuth integration.
-#You would need to replace "your_client_id", "your_client_secret", and "http://oauth-sidecar/callback" with your actual OAuth client ID, client secret, and redirect URL. Additionally, you would need to ensure that the OAuth sidecar image (oauth-sidecar-image:latest in the example) is properly configured to handle OAuth requests and responses.
-
-#This is a basic example and might need adjustments based on your specific OAuth provider and requirements.
-apiVersion: v1
-kind: Service
-metadata:
-  name: my-service
-spec:
-  ports:
-    - name: http
-      port: 80
-  selector:
-    app: my-app
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      containers:
-        - name: my-app-container
-          image: my-app-image:latest
-          ports:
-            - containerPort: 8080
-        - name: oauth-sidecar
-          image: oauth-sidecar-image:latest
-          ports:
-            - containerPort: 8181
-          env:
-            - name: OAUTH_CLIENT_ID
-              value: "your_client_id"
-            - name: OAUTH_CLIENT_SECRET
-              value: "your_client_secret"
-            - name: OAUTH_REDIRECT_URL
-              value: "http://oauth-sidecar/callback"
-            # Other OAuth configurations
----
-#Certainly! Below is an example of a configuration YAML file (config.yaml) for an OAuth sidecar container. This configuration includes environment variables for OAuth settings, such as client ID, client secret, and redirect URL:
-#
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: oauth-sidecar-config
-data:
-  OAUTH_CLIENT_ID: "your_client_id"
-  OAUTH_CLIENT_SECRET: "your_client_secret"
-  OAUTH_REDIRECT_URL: "http://oauth-sidecar/callback"
-  OAUTH_SERVER_URL: "http://oauth-server-url/oauth"
-
-#In this configuration:
-
-#Replace "your_client_id" and "your_client_secret" with your actual OAuth client ID and client secret, respectively.
-#Modify the "http://oauth-sidecar/callback" URL to match the redirect URL configured in your OAuth provider settings.
-#Adjust "http://oauth-server-url/oauth" to point to your OAuth server's authentication endpoint.
-#You can then mount this ConfigMap into your OAuth sidecar container as environment variables. Here's an example Deployment YAML (deployment.yaml) that demonstrates how to do this:
-
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: oauth-sidecar
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: oauth-sidecar
-  template:
-    metadata:
-      labels:
-        app: oauth-sidecar
-    spec:
-      containers:
-        - name: oauth-sidecar
-          image: oauth-sidecar-image:latest
-          ports:
-            - containerPort: 8181
-          envFrom:
-            - configMapRef:
-                name: oauth-sidecar-config
-
-#In this Deployment configuration:
-
-#Replace "oauth-sidecar-image:latest" with the image name and tag of your OAuth sidecar container.
-#The envFrom field is used to inject environment variables from the ConfigMap (oauth-sidecar-config) into the sidecar container.
-#Ensure that the sidecar container's application code or configuration is set up to read these environment variables for OAuth functionality.
-#After applying these configurations (config.yaml for the ConfigMap and deployment.yaml for the Deployment), your OAuth sidecar container should be able to access the OAuth server using the provided OAuth settings. Adjust the configuration as needed based on your specific OAuth provider and requirements.
-
----
-#To create a build configuration (bc.yaml) for building an OAuth sidecar container image in OpenShift, you can use a Source-to-Image (S2I) strategy or a Dockerfile strategy. Below are examples for both approaches:
-
-#S2I Build Configuration:
-#This approach uses Source-to-Image to build the container image from source code. Here's an example bc.yaml for an S2I build:
-apiVersion: build.openshift.io/v1
-kind: BuildConfig
-metadata:
-  name: oauth-sidecar-build
-spec:
-  source:
-    git:
-      uri: "https://github.com/your-repo/oauth-sidecar"
-      ref: "main"
-  strategy:
-    sourceStrategy:
-      from:
-        kind: ImageStreamTag
-        name: "ubi8/nodejs-14:latest"  # Use a base image suitable for your OAuth sidecar
-      incremental: false
-    type: Source
-  output:
-    to:
-      kind: ImageStreamTag
-      name: "oauth-sidecar-image:latest"  # Name of the resulting image
-#Replace "https://github.com/your-repo/oauth-sidecar" with the URL of your OAuth sidecar source code repository. Adjust the base image (ubi8/nodejs-14:latest in this example) according to your requirements.
-
-#Dockerfile Build Configuration:
-#This approach uses a Dockerfile to build the container image. Here's an example bc.yaml for a Dockerfile build:
-apiVersion: build.openshift.io/v1
-kind: BuildConfig
-metadata:
-  name: oauth-sidecar-build
-spec:
-  source:
-    git:
-      uri: "https://github.com/your-repo/oauth-sidecar"
-      ref: "main"
-  strategy:
-    dockerStrategy:
-      dockerfilePath: Dockerfile  # Path to your Dockerfile in the source repository
-    type: Docker
-  output:
-    to:
-      kind: ImageStreamTag
-      name: "oauth-sidecar-image:latest"  # Name of the resulting image
-#In this configuration, replace "https://github.com/your-repo/oauth-sidecar" with the URL of your OAuth sidecar source code repository. Ensure that you have a Dockerfile in the root of your repository or update dockerfilePath accordingly.
-
-#After creating the bc.yaml file with either the S2I or Dockerfile approach, you can apply it to your OpenShift cluster using the oc apply command:
-
-oc apply -f bc.yaml
-
-#In this configuration, replace "https://github.com/your-repo/oauth-sidecar" with the URL of your OAuth sidecar source code repository. Ensure that you have a Dockerfile in the root of your repository or update dockerfilePath accordingly.
-
-#After creating the bc.yaml file with either the S2I or Dockerfile approach, you can apply it to your OpenShift cluster using the oc apply command:
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      containers:
-        - name: main-app
-          image: my-app-image:latest
-          ports:
-            - containerPort: 8080
-        - name: oauth-sidecar
-          image: oauth-sidecar-image:latest
-          ports:
-            - containerPort: 8181
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: 8181
-            initialDelaySeconds: 10
-            periodSeconds: 15
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8181
-            initialDelaySeconds: 15
-            periodSeconds: 30
-#In this example:
-
-#The readiness probe checks the sidecar container's readiness by sending an HTTP GET request to the /healthz endpoint on port 8181 (http://oauth-sidecar:8181/healthz). The initial delay before starting the probe is set to 10 seconds, and it runs every 15 seconds (periodSeconds: 15).
-#The liveness probe checks the sidecar container's liveness by sending an HTTP GET request to the /healthz endpoint on port 8181 (http://oauth-sidecar:8181/healthz). The initial delay before starting the probe is set to 15 seconds, and it runs every 30 seconds (periodSeconds: 30).
-#You would replace "oauth-sidecar-image:latest" with the actual image name and version of your OAuth sidecar container. Adjust the paths, ports, initial delay, and period as needed based on your application's requirements and behavior.
-
-#Ensure that your sidecar container's application exposes a /healthz endpoint that returns an appropriate HTTP status code (e.g., 200 OK for healthy, 500 Internal Server Error for unhealthy) for the probes to function correctly. You can customize the /healthz endpoint implementation based on your application's health checks and requirements.
+Once logs are indexed, you can search, filter, and analyze them using Splunk's search interface and visualization tools:
+Use Splunk's search language (SPL) to query logs from both containers simultaneously or separately.
+Utilize Splunk's visualization tools to create dashboards and reports based on the collected log data.
+Correlate events from the main application and sidecar containers based on common fields or timestamps.
+Set up alerts and notifications for specific log events or patterns using Splunk's alerting mechanisms.
+Search and Analysis:a. Search Language (SPL):
+Use Splunk's powerful search language (SPL) to query and analyze logs from both containers simultaneously or separately.
+Example SPL queries:
+index=your_index sourcetype=main_app_logs: Retrieves logs from the main application container.
+index=your_index sourcetype=sidecar_logs: Retrieves logs from the sidecar container.
+You can further refine your queries using filters, time ranges, and other SPL commands to pinpoint specific events or patterns.
+b. Visualization Tools:
+Utilize Splunk's visualization tools to create dashboards, reports, and charts based on the collected log data.
+Examples of visualization types:
+Line charts, bar charts, and pie charts: Visualize trends or distributions of log events over time.
+Tables and lists: Display raw log data or aggregated statistics.
+Heatmaps: Identify patterns or anomalies in log events.
+Customize your visualizations to suit your monitoring and troubleshooting needs.
+c. Correlation:
+Correlate events from the main application and sidecar containers based on common fields, timestamps, or other attributes.
+Use Splunk's search capabilities to correlate events across different containers within the same pod.
+Identify dependencies or relationships between events from the main application and sidecar containers.
+d. Alerting:
+Set up alerts and notifications for specific log events or patterns using Splunk's alerting mechanisms.
+Define alert conditions based on thresholds, patterns, or anomalies detected in the log data.
+Receive notifications via email, SMS, or other channels when alert conditions are met.
+e. Advanced Analysis:
+Leverage advanced analysis techniques such as machine learning, anomaly detection, and predictive analytics.
+Use Splunk's Machine Learning Toolkit (MLTK) to detect unusual patterns or anomalies in your log data.
+Apply statistical models or predictive algorithms to forecast future trends or identify potential issues proactively.
+f. Reporting:
+Generate reports and summaries of log data for stakeholders, management, or compliance purposes.
+Customize report templates to include relevant metrics, charts, and insights derived from the log data.
+Schedule automated report generation and distribution to streamline communication and decision-making processes.
+By utilizing Splunk's search and analysis capabilities effectively, you can gain valuable insights, troubleshoot issues, and monitor the performance of both the main application and sidecar containers in your OpenShift clus
 
 
+To find pod-level logs for both the sidecar and main application containers in Splunk, create a dashboard, and set up alerts, follow these steps:
+
+Search for Pod Level Logs: Use Splunk's search functionality to search for logs from both the main application and sidecar containers within your pods. Construct search queries similar to the ones mentioned earlier:
+
+index=<your_index> kubernetes.pod_name=<your_pod_name> container_name=<your_main_container_name>
+index=<your_index> kubernetes.pod_name=<your_pod_name> container_name=<your_sidecar_container_name>
+Combine Searches: Combine multiple search queries into a single search using the OR operator. For example:
+
+index=<your_index> (kubernetes.pod_name=<your_pod_name> container_name=<your_main_container_name>) OR (kubernetes.pod_name=<your_pod_name> container_name=<your_sidecar_container_name>)
+Save Search as Report: Once you have refined your search to retrieve the desired logs, save it as a report. This makes it easier to reuse the search in your dashboard and alerts.
+Create a Dashboard: Navigate to the Splunk dashboard creation interface and add panels to visualize the logs. You can use various visualization types such as tables, charts, or event lists. Specify the source type and search query for each panel.
+Add Search Inputs: If you want users to interactively search for specific pod logs within your dashboard, add search inputs such as dropdown menus, text fields, or time pickers.
+Save and Publish Dashboard: Save your dashboard and publish it so that it's accessible to other users within your Splunk environment.
+Set up Alerts: Configure alerts to notify you when certain conditions are met in the logs. Define the search criteria for your alert, such as specific keywords or patterns in the logs. Specify the alert action, such as sending an email or triggering a webhook.
+Test and Iterate: Test your dashboard and alerts to ensure they work as expected. Iterate on the design and configuration based on feedback and make adjustments as necessary.
+By following these steps, you can find pod-level logs for both the sidecar and main application containers in Splunk, create a dashboard to visualize the logs, and set up alerts to notify you of important events or anomalies. Adjust the queries, visualizations, and alert conditions based on your specific requirements and preferences.
 
 
 
