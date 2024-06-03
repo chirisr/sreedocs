@@ -1038,3 +1038,52 @@ High write throughput needs.
 Applications that require automatic data sharding and horizontal scalability.
 Environments where high availability and redundancy are crucial, along with the ability to distribute the load across multiple nodes.
 By considering these factors and evaluating the specific needs of your application, you can make an informed decision between using Redis Sentinel or Redis Cluster.
+
+    #!/bin/sh
+    services=(
+      "https://www.google.co.in/"
+    )
+    for service in "${services[@]}"; do
+      until curl -sSf "http://$service"; do
+        echo "Waiting for $service"
+        sleep 5
+      done
+    done
+    echo "All services are up"
+
+#!/bin/bash
+
+# Define service endpoints
+REDIS_HOST="https://www.google.co.in/"
+KAFKA_HOST="kafka-service:9092"
+
+# Function to check if a service is up
+check_service_status() {
+  local SERVICE_URL=$1
+
+  # Make a request to the service and get the HTTP status code
+  local HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $SERVICE_URL)
+
+  # Check if the status code is 200 (OK)
+  if [ "$HTTP_STATUS" -eq 200 ]; then
+    echo "up"
+  else
+    echo "down"
+  fi
+}
+
+# Check Redis service
+REDIS_STATUS=$(check_service_status $REDIS_HOST)
+# Check Kafka service
+KAFKA_STATUS=$(check_service_status $KAFKA_HOST)
+
+# Determine which service is up and set the hostname
+if [ "$REDIS_STATUS" == "up" ]; then
+    echo "Service at $REDIS_HOST is UP"
+elif [ "$KAFKA_STATUS" == "up" ]; then
+    echo "Service at $SERVICE_URL is UP"
+else
+    echo "Service at $SERVICE_URL is DOWN. HTTP Status Code: $HTTP_STATUS"
+    echo "Neither Redis nor Kafka is up. Exiting."
+    exit 1
+fi
