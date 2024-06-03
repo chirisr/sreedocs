@@ -1139,3 +1139,30 @@ Pod Lifecycle:
 
 Both the main container and the sidecar container run for the duration of the pod's life. If either container crashes, the pod may restart depending on the restart policy.
 This setup ensures that all necessary services are available before the main application starts, and any auxiliary tasks run alongside the main application.
+
+Explanation of Changes
+Init Container Script:
+
+services="service1:port1,service2:port2": This is the comma-separated list of services.
+IFS=',' read -r -a service_array <<< "$services": This line splits the comma-separated services into an array service_array using the internal field separator (IFS) set to a comma.
+The for loop iterates through each element in the service_array.
+Service Check Logic:
+
+For each service in the array, it extracts the hostname and port using cut and performs the reachability and port check.
+If any service is unreachable or its port is not open, the script exits with a non-zero status, causing the pod to restart.
+Main and Sidecar Containers:
+
+The my-app-container and sidecar-container start after the init container successfully completes.
+The sidecar-container runs a simple infinite loop to simulate auxiliary tasks.
+Sequencing Flow
+Init Container Execution:
+
+The service-check init container runs first and parses the comma-separated list of services.
+It performs the necessary checks for each service. If any check fails, the init container exits with a non-zero status, and the pod restarts.
+Main and Sidecar Containers Start:
+
+Upon successful completion of the init container, the main container (my-app-container) and the sidecar container (sidecar-container) start simultaneously.
+Pod Lifecycle:
+
+Both the main container and the sidecar container continue to run for the pod's lifetime, providing the main application functionality and auxiliary services, respectively.
+This setup ensures that the main application does not start until all specified services are confirmed to be up and reachable. The sidecar container runs alongside the main container, supporting its operations as needed.
