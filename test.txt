@@ -1087,3 +1087,25 @@ else
     echo "Neither Redis nor Kafka is up. Exiting."
     exit 1
 fi
+
+
+
+
+              services=("service1:port1" "service2:port2")
+              for service in "${services[@]}"; do
+                host=$(echo "$service" | cut -d: -f1)
+                port=$(echo "$service" | cut -d: -f2)
+                if ping -c 1 "$host" &> /dev/null; then
+                  echo "$host is reachable"
+                  if echo >/dev/tcp/"$host"/"$port"; then
+                    echo "$host:$port is up"
+                  else
+                    echo "$host:$port is down"
+                    exit 1
+                  fi
+                else
+                  echo "$host is unreachable"
+                  exit 1
+                fi
+              done
+              echo "All services are up"
