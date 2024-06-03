@@ -1109,3 +1109,33 @@ fi
                 fi
               done
               echo "All services are up"
+
+Explanation of Sequencing
+Init Containers:
+
+Purpose: Init containers run before the main application containers start. They are designed to perform initialization tasks such as setting up dependencies, performing checks, or preparing the environment.
+Example: The service-check init container runs a script to verify that the specified services (service1 and service2) are up and reachable on their respective ports. It pings each host and checks if the specified port is open using echo >/dev/tcp/"$host"/"$port".
+Execution: Init containers are executed sequentially. Each init container must complete successfully before the next one starts. If any init container fails, the pod will restart and try again.
+Main Containers:
+
+Purpose: The main application logic resides in these containers. They perform the primary functions of the application.
+Example: The my-app-container runs the main application using the my-app-image:latest image and exposes port 8080.
+Execution: The main containers start after all init containers have completed successfully.
+Sidecar Containers:
+
+Purpose: Sidecar containers run alongside the main containers and provide auxiliary functions, such as logging, monitoring, or communication proxies.
+Example: The sidecar-container in this example runs a simple script in a loop, simulating a sidecar process. Typically, sidecars perform tasks such as collecting logs or monitoring metrics.
+Execution: Sidecar containers start simultaneously with the main containers. They share the same pod lifecycle and are terminated when the pod is terminated.
+Sequencing Flow
+Init Container Execution:
+
+The service-check init container runs first. It performs the necessary checks to ensure that service1 and service2 are reachable.
+If the service-check init container fails (e.g., if any service is down), the pod will restart, and the init container will run again.
+Main and Sidecar Containers Start:
+
+Once the service-check init container completes successfully, the main container (my-app-container) and the sidecar container (sidecar-container) start simultaneously.
+The main container runs the application logic, while the sidecar container runs auxiliary tasks.
+Pod Lifecycle:
+
+Both the main container and the sidecar container run for the duration of the pod's life. If either container crashes, the pod may restart depending on the restart policy.
+This setup ensures that all necessary services are available before the main application starts, and any auxiliary tasks run alongside the main application.
