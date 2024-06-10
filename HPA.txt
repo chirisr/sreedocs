@@ -442,3 +442,90 @@ To test the HPA, generate load on your application and observe the scaling behav
 
 Conclusion
 Implementing HPA for a pod with multiple containers in OpenShift allows for efficient and automated scaling based on resource utilization. This ensures that your application can handle varying loads while optimizing resource usage. By following the steps outlined in this document, you can set up and manage HPA for your multi-container applications in OpenShift effectively.
+
+
+Prometheus Adapter Configuration
+The Prometheus Adapter is used to expose the custom metrics from Prometheus to Kubernetes. You need to configure it to recognize the JVM memory metrics.
+
+Example configuration for the Prometheus Adapter (config-map.yaml):
+
+yaml
+Copy code
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-metrics-config
+  namespace: default
+data:
+  config.yaml: |
+    rules:
+    - seriesQuery: '{__name__=~"^jvm_memory_used_bytes.*"}'
+      seriesFilters:
+      - isNot: '0'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)_bytes"
+        as: "${1}_usage"
+      metricsQuery: 'avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+Apply the configuration:
+
+sh
+Copy code
+kubectl apply -f config-map.yaml
+4. Creating the HPA
+Create an HPA that uses the custom JVM memory metric to scale your deployment. Here’s an example YAML file for an HPA that scales based on the average JVM memory used across all pods:
+
+yaml
+Copy code
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: jvm-memory-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-java-application
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: jvm_memory_used_bytes_usage
+      target:
+        type: AverageValue
+        averageValue: 500Mi
+Apply the HPA configuration:
+
+sh
+Copy code
+kubectl apply -f jvm-memory-hpa.yaml
+How HPA Works
+Metric Collection: The Java application exposes JVM memory metrics, which are scraped by Prometheus.
+Metric Exposure to Kubernetes: The Prometheus Adapter queries Prometheus and exposes these metrics to the Kubernetes Metrics API.
+HPA Evaluation: The HPA controller periodically queries the Kubernetes Metrics API to get the current values of the metrics specified in the HPA configuration.
+Scaling Decision: The HPA controller compares the current metric values against the target values specified in the HPA configuration.
+If the current average JVM memory usage per pod exceeds 500Mi (in this example), the HPA will increase the number of replicas in the deployment.
+If the usage drops below 500Mi, the HPA will decrease the number of replicas, down to the minimum number specified.
+Scaling Execution: Based on the comparison, the HPA controller adjusts the number of pod replicas in the deployment to meet the desired metric target.
+Verification and Monitoring
+To verify that your HPA is working correctly, you can use:
+
+sh
+Copy code
+kubectl get hpa jvm-memory-hpa
+This command shows the current status of the HPA, including the current metric values and the number of replicas.
+
+Summary
+The process to trigger an HPA based on JVM memory metrics involves:
+
+Exposing JVM memory metrics from the Java application.
+Scraping these metrics using Prometheus.
+Configuring the Prometheus Adapter to expose the metrics to Kubernetes.
+Creating an HPA that uses these custom metrics to scale the application.
+By setting up these components, Kubernetes can automatically adjust the number of pods in your deployment based on the JVM memory usage, ensuring efficient resource utilization and application performance.
