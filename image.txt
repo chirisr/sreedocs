@@ -116,3 +116,91 @@ Building and Using the Image:
 Build the Docker image using the docker build command.
 Update the OpenShift DeploymentConfig to use this image for the init container.
 This approach ensures that the main application container does not start until all specified services are confirmed to be up and reachable. The sidecar container runs alongside the main container, supporting its operations as needed.
+
+
+
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: example-deployment
+spec:
+  replicas: 1
+  selector:
+    app: example
+    deploymentconfig: example-deployment
+  template:
+    metadata:
+      labels:
+        app: example
+        deploymentconfig: example-deployment
+    spec:
+      initContainers:
+        - name: check-redis
+          image: busybox:latest
+          command: ['sh', '-c', '
+            echo "Checking Redis status...";
+            while true; do
+              if redis-cli -h redis-host -p 6379 ping | grep PONG; then
+                echo "Redis is up!";
+                break;
+              fi;
+              echo "Waiting for Redis...";
+              sleep 2;
+            done
+          ']
+      containers:
+        - name: sidecar-container
+          image: sidecar-image:latest
+          ports:
+            - containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+          command: ["/bin/sh", "-c", "touch /data/sidecar-ready && while true; do sleep 3600; done"]
+          volumeMounts:
+            - name: shared-data
+              mountPath: /data
+        - name: main-app
+          image: main-app-image:latest
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: shared-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", '
+                  echo "Checking Sidecar status...";
+                  retries=10;
+                  while [ $retries -gt 0 ]; do
+                    if curl -s http://localhost:8081/health | grep "healthy"; then
+                      echo "Sidecar is healthy, starting main app";
+                      break;
+                    fi;
+                    echo "Waiting for sidecar to become healthy...";
+                    retries=$((retries - 1));
+                    sleep 5;
+                  done;
+                  if [ $retries -le 0 ]; then
+                    echo "Sidecar did not become healthy in time, exiting";
+                    exit 1;
+                  fi
+                ']
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+
