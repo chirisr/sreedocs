@@ -1,0 +1,118 @@
+Step 1: Create the Script
+Create a script named service-check.sh:
+
+bash
+Copy code
+#!/bin/sh
+
+check_service() {
+  service=$1
+  if echo "$service" | grep -q "^http"; then
+    host=$(echo "$service" | sed -E 's|https?://([^:/]+).*|\1|')
+    port=$(echo "$service" | sed -E 's|.*:(.*)|\1|')
+  else
+    host=$(echo "$service" | cut -d: -f1)
+    port=$(echo "$service" | cut -d: -f2)
+  fi
+
+  if [ -z "$port" ]; then
+    if echo "$service" | grep -q "^https"; then
+      port=443
+    else
+      port=80
+    fi
+  fi
+
+  echo "Checking $host on port $port"
+  if ping -c 1 "$host" &> /dev/null; then
+    echo "$host is reachable"
+    if (echo > /dev/tcp/"$host"/"$port") &> /dev/null; then
+      echo "$host:$port is up"
+    else
+      echo "$host:$port is down"
+      exit 1
+    fi
+  else
+    echo "$host is unreachable"
+    exit 1
+  fi
+}
+
+services="http://service1:80,https://service2:443,service3:port3"
+IFS=',' read -r -a service_array <<< "$services"
+for service in "${service_array[@]}"; do
+  check_service "$service"
+done
+echo "All services are up"
+Step 2: Create the Dockerfile
+Create a Dockerfile to build the image:
+
+Dockerfile
+Copy code
+# Use a minimal base image
+FROM busybox:latest
+
+# Copy the service-check script into the container
+COPY service-check.sh /service-check.sh
+
+# Make the script executable
+RUN chmod +x /service-check.sh
+
+# Run the script as the entrypoint
+ENTRYPOINT ["/service-check.sh"]
+Step 3: Build the Docker Image
+Navigate to the directory containing service-check.sh and the Dockerfile, then build the Docker image:
+
+sh
+Copy code
+docker build -t service-check:latest .
+Step 4: Modify the OpenShift DeploymentConfig
+Use the built image in your OpenShift DeploymentConfig. Update the init container to use the service-check:latest image:
+
+yaml
+Copy code
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: my-app
+spec:
+  replicas: 1
+  selector:
+    app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      initContainers:
+        - name: service-check
+          image: service-check:latest
+      containers:
+        - name: my-app-container
+          image: my-app-image:latest
+          ports:
+            - containerPort: 8080
+        - name: sidecar-container
+          image: busybox
+          command: 
+            - sh
+            - -c
+            - |
+              echo "Starting sidecar container"
+              while true; do sleep 3600; done
+Summary
+Script (service-check.sh):
+
+This script checks the reachability of services specified as HTTP, HTTPS, or host
+.
+It uses a function check_service to encapsulate the logic for checking each service.
+The script supports services without explicit ports, defaulting to 80 for HTTP and 443 for HTTPS.
+Dockerfile:
+
+The Dockerfile uses busybox as the base image and copies the service-check.sh script into the image.
+The script is set as the entrypoint.
+Building and Using the Image:
+
+Build the Docker image using the docker build command.
+Update the OpenShift DeploymentConfig to use this image for the init container.
+This approach ensures that the main application container does not start until all specified services are confirmed to be up and reachable. The sidecar container runs alongside the main container, supporting its operations as needed.
