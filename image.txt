@@ -204,3 +204,97 @@ spec:
         - name: shared-data
           emptyDir: {}
 
+
+Explanation:
+Function check_service_status:
+
+This function checks if a specific host and port are reachable.
+Hosts and Ports as Comma-Separated Values:
+
+The script defines REDIS_HOSTS and REDIS_PORTS as comma-separated strings.
+Similarly, it defines KAFKA_HOSTS and KAFKA_PORTS as comma-separated strings.
+Convert Hosts and Ports to Arrays:
+
+The IFS=',' read -r -a REDIS_HOSTS_ARRAY <<< "$REDIS_HOSTS" and similar commands split the comma-separated strings into arrays.
+User Input for Service Type:
+
+The script prompts the user to enter the type of service (redis or kafka).
+Iterate through Arrays and Check Status:
+
+Depending on whether the user entered redis or kafka, the script iterates through the corresponding host and port arrays.
+For each host and port pair, it calls the check_service_status function to check the status of the instance.
+This script configuration allows you to check multiple Redis and Kafka instances using comma-separated host and port values directly in the script.
+
+
+#!/bin/bash
+
+# Function to log messages to a file
+log_message() {
+    local log_file="$1"
+    local message="$2"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" >> "$log_file"
+}
+
+# Function to check the status of the service
+check_service_status() {
+    local host=$1
+    local port=$2
+    local service=$3
+
+    if (echo > /dev/tcp/$host/$port) >/dev/null 2>&1; then
+        log_message "$LOG_FILE" "$service service is running on $host:$port."
+    else
+        log_message "$LOG_FILE" "$service service is not running on $host:$port."
+    fi
+}
+
+# Define the hosts and ports for Redis and Kafka instances as comma-separated values
+REDIS_HOSTS="127.0.0.1,127.0.0.2"
+REDIS_PORTS="6379,6380"
+KAFKA_HOSTS="127.0.0.1,127.0.0.2"
+KAFKA_PORTS="9092,9093"
+
+# Convert the hosts and ports into arrays
+IFS=',' read -r -a REDIS_HOSTS_ARRAY <<< "$REDIS_HOSTS"
+IFS=',' read -r -a REDIS_PORTS_ARRAY <<< "$REDIS_PORTS"
+IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
+IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
+
+# Get the service type from the user
+echo "Enter the service type (redis/kafka): "
+read service_type
+
+# Set the log file path
+LOG_FILE="service_check.log"
+
+# Initialize the log file
+echo "Service Check Log" > "$LOG_FILE"
+
+# Check the status of the specified service instances
+case $service_type in
+    redis)
+        SERVICE="Redis"
+        for i in "${!REDIS_HOSTS_ARRAY[@]}"; do
+            check_service_status "${REDIS_HOSTS_ARRAY[$i]}" "${REDIS_PORTS_ARRAY[$i]}" $SERVICE
+        done
+        ;;
+    kafka)
+        SERVICE="Kafka"
+        for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
+            check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}" $SERVICE
+        done
+        ;;
+    *)
+        echo "Invalid service type. Please enter 'redis' or 'kafka'."
+        exit 1
+        ;;
+esac
+
+# Log completion message
+log_message "$LOG_FILE" "Service check completed."
+In this script:
+
+The log_message function writes a message along with a timestamp to the specified log file.
+Before executing any checks, the script initializes the log file with a header.
+After checking the status of all instances, it logs a completion message to the log file.
+You can customize the log file path (LOG_FILE) as needed. When the script is run, it will log all service status messages to the specified log file.
