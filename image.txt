@@ -386,7 +386,6 @@ done
 
 
 
-
 #!/bin/bash
 
 # Function to log messages to a file and console
@@ -404,8 +403,10 @@ check_service_status() {
 
     if (echo > /dev/tcp/$host/$port) >/dev/null 2>&1; then
         log_message "$LOG_FILE" "$service service is running on $host:$port."
+        return 0
     else
         log_message "$LOG_FILE" "$service service is not running on $host:$port."
+        return 1
     fi
 }
 
@@ -427,7 +428,7 @@ IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
 IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
 
 # Set the log file path
-LOG_FILE="service_check.log"
+LOG_FILE="/mnt/scripts/service_check.log"
 
 # Initialize the log file
 echo "Service Check Log" > "$LOG_FILE"
@@ -449,22 +450,25 @@ check_redis_status() {
     fi
 
     for i in "${!hosts_array[@]}"; do
-        check_service_status "${hosts_array[$i]}" "${ports_array[$i]}" "$service"
+        if ! check_service_status "${hosts_array[$i]}" "${ports_array[$i]}" "$service"; then
+            return 1
+        fi
     done
 }
 
 # Check the status of Redis instances based on the cluster flag
-check_redis_status
+if ! check_redis_status; then
+    exit 1
+fi
 
 # Check the status of Kafka instances
 SERVICE="Kafka"
 for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
-    check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}" "$SERVICE"
+    if ! check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}" "$SERVICE"; then
+        exit 1
+    fi
 done
 
 # Log completion message
 log_message "$LOG_FILE" "Service check completed."
 
-
-# Log completion message
-log_message "$LOG_FILE" "Service check completed."
