@@ -410,8 +410,13 @@ check_service_status() {
     fi
 }
 
+# Initialize log file
+LOG_FILE="/mnt/scripts/service_check.log"
+echo "Service Check Log" > "$LOG_FILE"
+log_message "$LOG_FILE" "Starting service checks."
+
 # Flag to determine Redis cluster or standalone
-REDIS_CLUSTER_FLAG=true
+REDIS_CLUSTER_FLAG=${REDIS_CLUSTER_FLAG:-true}
 
 # Define Redis cluster and standalone details
 REDIS_CLUSTER_HOSTS="127.0.0.1,localhost,example.com"
@@ -427,12 +432,6 @@ KAFKA_PORTS="9092,9093,9094"
 IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
 IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
 
-# Set the log file path
-LOG_FILE="/mnt/scripts/service_check.log"
-
-# Initialize the log file
-echo "Service Check Log" > "$LOG_FILE"
-
 # Function to check Redis status based on the cluster flag
 check_redis_status() {
     local hosts_array
@@ -443,10 +442,12 @@ check_redis_status() {
         IFS=',' read -r -a hosts_array <<< "$REDIS_CLUSTER_HOSTS"
         IFS=',' read -r -a ports_array <<< "$REDIS_CLUSTER_PORTS"
         service="Redis Cluster"
+        log_message "$LOG_FILE" "Checking Redis Cluster services."
     else
         IFS=',' read -r -a hosts_array <<< "$REDIS_STANDALONE_HOSTS"
         IFS=',' read -r -a ports_array <<< "$REDIS_STANDALONE_PORTS"
         service="Redis Standalone"
+        log_message "$LOG_FILE" "Checking Redis Standalone services."
     fi
 
     for i in "${!hosts_array[@]}"; do
@@ -458,17 +459,22 @@ check_redis_status() {
 
 # Check the status of Redis instances based on the cluster flag
 if ! check_redis_status; then
+    log_message "$LOG_FILE" "One or more Redis services are not running. Exiting with status 1."
     exit 1
 fi
 
 # Check the status of Kafka instances
 SERVICE="Kafka"
+log_message "$LOG_FILE" "Checking Kafka services."
 for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
     if ! check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}" "$SERVICE"; then
+        log_message "$LOG_FILE" "One or more Kafka services are not running. Exiting with status 1."
         exit 1
     fi
 done
 
 # Log completion message
-log_message "$LOG_FILE" "Service check completed."
+log_message "$LOG_FILE" "Service check completed successfully."
+exit 0
+
 
