@@ -298,3 +298,90 @@ The log_message function writes a message along with a timestamp to the specifie
 Before executing any checks, the script initializes the log file with a header.
 After checking the status of all instances, it logs a completion message to the log file.
 You can customize the log file path (LOG_FILE) as needed. When the script is run, it will log all service status messages to the specified log file.
+
+
+
+
+
+#!/bin/bash
+
+# Function to log messages to a file and console
+log_message() {
+    local log_file="$1"
+    local message="$2"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" | tee -a "$log_file"
+}
+
+# Function to check the status of the service
+check_service_status() {
+    local host=$1
+    local port=$2
+    local service=$3
+
+    if (echo > /dev/tcp/$host/$port) >/dev/null 2>&1; then
+        log_message "$LOG_FILE" "$service service is running on $host:$port."
+    else
+        log_message "$LOG_FILE" "$service service is not running on $host:$port."
+    fi
+}
+
+# Define Redis cluster and standalone details
+REDIS_CLUSTER_HOSTS="127.0.0.1,localhost,example.com"
+REDIS_CLUSTER_PORTS="7000,7001,7002"
+REDIS_STANDALONE_HOSTS="127.0.0.1,localhost,example.com"
+REDIS_STANDALONE_PORTS="6379,6379,6379"
+
+# Define Kafka host and port values
+KAFKA_HOSTS="127.0.0.1,localhost,example.com"
+KAFKA_PORTS="9092,9093,9094"
+
+# Convert comma-separated hosts and ports into arrays
+IFS=',' read -r -a REDIS_CLUSTER_HOSTS_ARRAY <<< "$REDIS_CLUSTER_HOSTS"
+IFS=',' read -r -a REDIS_CLUSTER_PORTS_ARRAY <<< "$REDIS_CLUSTER_PORTS"
+IFS=',' read -r -a REDIS_STANDALONE_HOSTS_ARRAY <<< "$REDIS_STANDALONE_HOSTS"
+IFS=',' read -r -a REDIS_STANDALONE_PORTS_ARRAY <<< "$REDIS_STANDALONE_PORTS"
+IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
+IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
+
+# Set the log file path
+LOG_FILE="service_check.log"
+
+# Initialize the log file
+echo "Service Check Log" > "$LOG_FILE"
+
+# Function to check Redis cluster or standalone
+check_redis_status() {
+    local redis_type=$1
+    local hosts_array
+    local ports_array
+
+    if [ "$redis_type" == "cluster" ]; then
+        hosts_array=("${REDIS_CLUSTER_HOSTS_ARRAY[@]}")
+        ports_array=("${REDIS_CLUSTER_PORTS_ARRAY[@]}")
+        SERVICE="Redis Cluster"
+    elif [ "$redis_type" == "standalone" ]; then
+        hosts_array=("${REDIS_STANDALONE_HOSTS_ARRAY[@]}")
+        ports_array=("${REDIS_STANDALONE_PORTS_ARRAY[@]}")
+        SERVICE="Redis Standalone"
+    else
+        echo "Invalid Redis type. Please set redis_type to 'cluster' or 'standalone'."
+        exit 1
+    fi
+
+    for i in "${!hosts_array[@]}"; do
+        check_service_status "${hosts_array[$i]}" "${ports_array[$i]}" $SERVICE
+    done
+}
+
+# Check the status of Redis instances (both cluster and standalone)
+check_redis_status "cluster"
+check_redis_status "standalone"
+
+# Check the status of Kafka instances
+SERVICE="Kafka"
+for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
+    check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}" $SERVICE
+done
+
+# Log completion message
+log_message "$LOG_FILE" "Service check completed."
