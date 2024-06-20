@@ -477,4 +477,181 @@ done
 log_message "$LOG_FILE" "Service check completed successfully."
 exit 0
 
+#!/bin/bash
 
+log_message() {
+    local log_file="$1"
+    local level="$2"
+    local message="$3"
+
+    case "$LOG_LEVEL" in
+        DEBUG)
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - $level - $message" | tee -a "$log_file"
+            ;;
+        INFO)
+            [[ "$level" != "DEBUG" ]] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $level - $message" | tee -a "$log_file"
+            ;;
+        ERROR)
+            [[ "$level" == "ERROR" ]] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $level - $message" | tee -a "$log_file"
+            ;;
+        *)
+            echo "Invalid log level: $LOG_LEVEL"
+            exit 1
+            ;;
+    esac
+}
+
+load_properties() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        log_message "$LOG_FILE" "INFO" "Loading properties from $file."
+        while IFS='=' read -r key value; do
+            eval "${key}='${value}'"
+        done < "$file"
+    else
+        log_message "$LOG_FILE" "ERROR" "Properties file $file not found."
+    fi
+}
+
+check_service_status() {
+    local host=$1
+    local port=$2
+    local service=$3
+
+    if [ -z "$host" ] || [ -z "$port" ]; then
+        log_message "$LOG_FILE" "ERROR" "Error: Host or port is empty for $service service."
+        return 1
+    fi
+
+    log_message "$LOG_FILE" "DEBUG" "Checking $service service on $host:$port..."
+
+    if (echo > /dev/tcp/$host/$port) >/dev/null 2>&1; then
+        log_message "$LOG_FILE" "INFO" "$service service is running on $host:$port."
+        return 0
+    else
+        log_message "$LOG_FILE" "ERROR" "$service service is not running on $host:$port."
+        return 1
+    fi
+}
+
+# Initialize log file
+LOG_FILE="/mnt/scripts/service_check.log"
+LOG_LEVEL=${LOG_LEVEL:-"INFO"}  # Default log level is INFO
+echo "Service Check Log" > "$LOG_FILE"
+log_message "$LOG_FILE" "INFO" "Starting service checks."
+
+# Load properties from file if present
+PROPERTIES_FILE="/mnt/config/config.properties"
+load_properties "$PROPERTIES_FILE"
+
+# Set environment variables or fallback to properties
+REDIS_CLUSTER_FLAG=${REDIS_CLUSTER_FLAG:-$REDIS_CLUSTER_FLAG}
+REDIS_CLUSTER_HOSTS=${REDIS_CLUSTER_HOSTS:-$REDIS_CLUSTER_HOSTS}
+REDIS_CLUSTER_PORTS=${REDIS_CLUSTER_PORTS:-$REDIS_CLUSTER_PORTS}
+REDIS_STANDALONE_HOSTS=${REDIS_STANDALONE_HOSTS:-$REDIS_STANDALONE_HOSTS}
+REDIS_STANDALONE_PORTS=${REDIS_STANDALONE_PORTS:-$REDIS_STANDALONE_PORTS}
+KAFKA_ENABLED=${KAFKA_ENABLED:-$KAFKA_ENABLED}
+KAFKA_HOSTS=${KAFKA_HOSTS:-$KAFKA_HOSTS}
+KAFKA_PORTS=${KAFKA_PORTS:-$KAFKA_PORTS}
+
+# Check if necessary variables are set
+if [ "$KAFKA_ENABLED" = true ]; then
+    if [ -z "$KAFKA_HOSTS" ] || [ -z "$KAFKA_PORTS" ]; then
+        log_message "$LOG_FILE" "ERROR" "Error: KAFKA_HOSTS or KAFKA_PORTS is not set."
+        exit 1
+    fi
+fi
+
+if [ "$REDIS_CLUSTER_FLAG" = true ]; then
+    if [ -z "$REDIS_CLUSTER_HOSTS" ] || [ -z "$REDIS_CLUSTER_PORTS" ]; then
+        log_message "$LOG_FILE" "ERROR" "Error: REDIS_CLUSTER_HOSTS or REDIS_CLUSTER_PORTS is not set."
+        exit 1
+    fi
+else
+    if [ -z "$REDIS_STANDALONE_HOSTS" ] || [ -z "$REDIS_STANDALONE_PORTS" ]; then
+        log_message "$LOG_FILE" "ERROR" "Error: REDIS_STANDALONE_HOSTS or REDIS_STANDALONE_PORTS is not set."
+        exit 1
+    fi
+fi
+
+check_redis_status() {
+    local hosts_array
+    local ports_array
+    local service
+
+    if [ "$REDIS_CLUSTER_FLAG" = true ]; then
+        IFS=',' read -r -a hosts_array <<< "$REDIS_CLUSTER_HOSTS"
+        IFS=',' read -r -a ports_array <<< "$REDIS_CLUSTER_PORTS"
+        service="Redis Cluster"
+        log_message "$LOG_FILE" "INFO" "Checking Redis Cluster services."
+    else
+        IFS=',' read -r -a hosts_array <<< "$REDIS_STANDALONE_HOSTS"
+        IFS=',' read -r -a ports_array <<< "$REDIS_STANDALONE_PORTS"
+        service="Redis Standalone"
+        log_message "$LOG_FILE" "INFO" "Checking Redis Standalone services."
+    fi
+
+    for i in "${!hosts_array[@]}"; do
+        if ! check_service_status "${hosts_array[$i]}" "${ports_array[$i]}" "$service"; then
+            return 1
+        fi
+    done
+}
+
+check_kafka_status() {
+    if [ "$KAFKA_ENABLED" = true ]; then
+        IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
+        IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
+        local service="Kafka"
+        log_message "$LOG_FILE" "INFO" "Checking Kafka services."
+
+        for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
+            if ! check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}" "$service"; then
+                return 1
+            fi
+        done
+    else
+        log_message "$LOG_FILE" "INFO" "Kafka is disabled, skipping Kafka service checks."
+    fi
+}
+
+# Check the status of Redis instances based on the cluster flag
+if ! check_redis_status; then
+    log_message "$LOG_FILE" "ERROR" "One or more Redis services are not running. Exiting with status 1."
+    exit 1
+fi
+
+# Check the status of Kafka instances if Kafka is enabled
+if ! check_kafka_status; then
+    log_message "$LOG_FILE" "ERROR" "One or more Kafka services are not running. Exiting with status 1."
+    exit 1
+fi
+
+# Log completion message
+log_message "$LOG_FILE" "INFO" "Service check completed successfully."
+exit 0
+
+Detailed Explanation for End Users
+Inputs in the ConfigMap
+REDIS_CLUSTER_HOSTS: Comma-separated list of hosts for Redis Cluster.
+REDIS_CLUSTER_PORTS: Comma-separated list of ports corresponding to the Redis Cluster hosts.
+REDIS_STANDALONE_HOSTS: Comma-separated list of hosts for Redis Standalone.
+REDIS_STANDALONE_PORTS: Comma-separated list of ports corresponding to the Redis Standalone hosts.
+KAFKA_ENABLED: Boolean value (true or false) indicating if Kafka checks are enabled.
+KAFKA_HOSTS: Comma-separated list of hosts for Kafka.
+KAFKA_PORTS: Comma-separated list of ports corresponding to the Kafka hosts.
+What Happens During Execution
+Script Execution: The init container runs the service_check.sh script.
+Loading Properties: The script loads properties from the ConfigMap (/mnt/config/config.properties).
+Environment Variables: If environment variables are set, they override the properties.
+Redis and Kafka Checks:
+The script checks the status of Redis Cluster or Redis Standalone services based on the REDIS_CLUSTER_FLAG.
+If KAFKA_ENABLED is true, the script checks the status of Kafka services.
+Logging: The script logs actions and errors to /mnt/scripts/service_check.log.
+Error Handling:
+If required properties (e.g., hosts and ports) are missing, the script logs an error and exits with status 1.
+If any service is not running, the script logs an error and exits with status 1.
+Behavior if Inputs Are Missing
+Missing ConfigMap: The script logs an error and exits if the ConfigMap service-config is not found.
+Missing Properties: The script logs an error and exits if any required properties are missing.
+Service Not Running: The script logs an error and exits if any checked service is not running.
