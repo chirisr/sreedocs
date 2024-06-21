@@ -86,104 +86,97 @@ log_message $INFO "$LOG_FILE" "Starting service checks."
 PROPERTIES_FILE="/mnt/config/config.properties"
 load_properties "$PROPERTIES_FILE"
 
-# Set environment variables or fallback to properties
-REDIS_CLUSTER_FLAG=${REDIS_CLUSTER_FLAG:-$REDIS_CLUSTER_FLAG}
-REDIS_CLUSTER_HOSTS=${REDIS_CLUSTER_HOSTS:-$REDIS_CLUSTER_HOSTS}
-REDIS_CLUSTER_PORTS=${REDIS_CLUSTER_PORTS:-$REDIS_CLUSTER_PORTS}
-REDIS_STANDALONE_HOSTS=${REDIS_STANDALONE_HOSTS:-$REDIS_STANDALONE_HOSTS}
-REDIS_STANDALONE_PORTS=${REDIS_STANDALONE_PORTS:-$REDIS_STANDALONE_PORTS}
-KAFKA_ENABLED=${KAFKA_ENABLED:-$KAFKA_ENABLED}
-KAFKA_HOSTS=${KAFKA_HOSTS:-$KAFKA_HOSTS}
-KAFKA_PORTS=${KAFKA_PORTS:-$KAFKA_PORTS}
+# Check if Redis properties are set
+if [ ! -z "$REDIS_CLUSTER_HOSTS" ] || [ ! -z "$REDIS_STANDALONE_HOSTS" ]; then
+    # Set environment variables or fallback to properties
+    REDIS_CLUSTER_FLAG=${REDIS_CLUSTER_FLAG:-$REDIS_CLUSTER_FLAG}
+    REDIS_CLUSTER_HOSTS=${REDIS_CLUSTER_HOSTS:-$REDIS_CLUSTER_HOSTS}
+    REDIS_CLUSTER_PORTS=${REDIS_CLUSTER_PORTS:-$REDIS_CLUSTER_PORTS}
+    REDIS_STANDALONE_HOSTS=${REDIS_STANDALONE_HOSTS:-$REDIS_STANDALONE_HOSTS}
+    REDIS_STANDALONE_PORTS=${REDIS_STANDALONE_PORTS:-$REDIS_STANDALONE_PORTS}
 
-# Check if necessary variables are set
-if [ -z "$KAFKA_ENABLED" ]; then
-    log_message $FATAL "$LOG_FILE" "KAFKA_ENABLED is not set."
-    exit 1
-fi
+    # Function to check Redis status based on the cluster flag
+    check_redis_status() {
+        local hosts_array
+        local ports_array
+        local service
 
-if [ "$REDIS_CLUSTER_FLAG" = true ]; then
-    if [ -z "$REDIS_CLUSTER_HOSTS" ] || [ -z "$REDIS_CLUSTER_PORTS" ]; then
-        log_message $FATAL "$LOG_FILE" "REDIS_CLUSTER_HOSTS or REDIS_CLUSTER_PORTS is not set."
+        if [ "$REDIS_CLUSTER_FLAG" = true ]; then
+            IFS=',' read -r -a hosts_array <<< "$REDIS_CLUSTER_HOSTS"
+            IFS=',' read -r -a ports_array <<< "$REDIS_CLUSTER_PORTS"
+            service="Redis Cluster"
+            log_message $INFO "$LOG_FILE" "Checking Redis Cluster services."
+        else
+            IFS=',' read -r -a hosts_array <<< "$REDIS_STANDALONE_HOSTS"
+            IFS=',' read -r -a ports_array <<< "$REDIS_STANDALONE_PORTS"
+            service="Redis Standalone"
+            log_message $INFO "$LOG_FILE" "Checking Redis Standalone services."
+        fi
+
+        for i in "${!hosts_array[@]}"; do
+            if [ ${#ports_array[@]} -eq 1 ]; then
+                port="${ports_array[0]}"
+            else
+                port="${ports_array[$i]}"
+            fi
+            if ! check_service_status "${hosts_array[$i]}" "$port" "$service"; then
+                return 1
+            fi
+        done
+    }
+
+    # Check the status of Redis instances based on the cluster flag
+    if ! check_redis_status; then
+        log_message $FATAL "$LOG_FILE" "One or more Redis services are not running. Exiting with status 1."
         exit 1
     fi
 else
-    if [ -z "$REDIS_STANDALONE_HOSTS" ] || [ -z "$REDIS_STANDALONE_PORTS" ]; then
-        log_message $FATAL "$LOG_FILE" "REDIS_STANDALONE_HOSTS or REDIS_STANDALONE_PORTS is not set."
-        exit 1
-    fi
+    log_message $INFO "$LOG_FILE" "No Redis properties found. Skipping Redis check."
 fi
 
-# Function to check Redis status based on the cluster flag
-check_redis_status() {
-    local hosts_array
-    local ports_array
-    local service
+# Check if Kafka properties are set
+if [ ! -z "$KAFKA_HOSTS" ]; then
+    KAFKA_ENABLED=${KAFKA_ENABLED:-$KAFKA_ENABLED}
+    KAFKA_HOSTS=${KAFKA_HOSTS:-$KAFKA_HOSTS}
+    KAFKA_PORTS=${KAFKA_PORTS:-$KAFKA_PORTS}
 
-    if [ "$REDIS_CLUSTER_FLAG" = true ]; then
-        IFS=',' read -r -a hosts_array <<< "$REDIS_CLUSTER_HOSTS"
-        IFS=',' read -r -a ports_array <<< "$REDIS_CLUSTER_PORTS"
-        service="Redis Cluster"
-        log_message $INFO "$LOG_FILE" "Checking Redis Cluster services."
-    else
-        IFS=',' read -r -a hosts_array <<< "$REDIS_STANDALONE_HOSTS"
-        IFS=',' read -r -a ports_array <<< "$REDIS_STANDALONE_PORTS"
-        service="Redis Standalone"
-        log_message $INFO "$LOG_FILE" "Checking Redis Standalone services."
-    fi
-
-    for i in "${!hosts_array[@]}"; do
-        if [ ${#ports_array[@]} -eq 1 ]; then
-            port="${ports_array[0]}"
-        else
-            port="${ports_array[$i]}"
-        fi
-        if ! check_service_status "${hosts_array[$i]}" "$port" "$service"; then
-            return 1
-        fi
-    done
-}
-
-# Check the status of Redis instances based on the cluster flag
-if ! check_redis_status; then
-    log_message $FATAL "$LOG_FILE" "One or more Redis services are not running. Exiting with status 1."
-    exit 1
-fi
-
-# Function to check Kafka status if enabled
-check_kafka_status() {
-    if [ "$KAFKA_ENABLED" = true ]; then
-        if [ -z "$KAFKA_HOSTS" ] || [ -z "$KAFKA_PORTS" ]; then
-            log_message $FATAL "$LOG_FILE" "KAFKA_HOSTS or KAFKA_PORTS is not set."
-            exit 1
-        fi
-
-        # Convert comma-separated Kafka hosts and ports into arrays
-        IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
-        IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
-
-        # Check the status of Kafka instances
-        SERVICE="Kafka"
-        log_message $INFO "$LOG_FILE" "Checking Kafka services."
-        for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
-            if [ ${#KAFKA_PORTS_ARRAY[@]} -eq 1 ]; then
-                port="${KAFKA_PORTS_ARRAY[0]}"
-            else
-                port="${KAFKA_PORTS_ARRAY[$i]}"
-            fi
-            if ! check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "$port" "$SERVICE"; then
-                log_message $FATAL "$LOG_FILE" "One or more Kafka services are not running. Exiting with status 1."
+    # Function to check Kafka status if enabled
+    check_kafka_status() {
+        if [ "$KAFKA_ENABLED" = true ]; then
+            if [ -z "$KAFKA_HOSTS" ] || [ -z "$KAFKA_PORTS" ]; then
+                log_message $FATAL "$LOG_FILE" "KAFKA_HOSTS or KAFKA_PORTS is not set."
                 exit 1
             fi
-        done
-    else
-        log_message $INFO "$LOG_FILE" "Kafka service check is disabled."
-    fi
-}
 
-# Check the status of Kafka instances if enabled
-if ! check_kafka_status; then
-    exit 1
+            # Convert comma-separated Kafka hosts and ports into arrays
+            IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
+            IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
+
+            # Check the status of Kafka instances
+            SERVICE="Kafka"
+            log_message $INFO "$LOG_FILE" "Checking Kafka services."
+            for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
+                if [ ${#KAFKA_PORTS_ARRAY[@]} -eq 1 ]; then
+                    port="${KAFKA_PORTS_ARRAY[0]}"
+                else
+                    port="${KAFKA_PORTS_ARRAY[$i]}"
+                fi
+                if ! check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "$port" "$SERVICE"; then
+                    log_message $FATAL "$LOG_FILE" "One or more Kafka services are not running. Exiting with status 1."
+                    exit 1
+                fi
+            done
+        else
+            log_message $INFO "$LOG_FILE" "Kafka service check is disabled."
+        fi
+    }
+
+    # Check the status of Kafka instances if enabled
+    if ! check_kafka_status; then
+        exit 1
+    fi
+else
+    log_message $INFO "$LOG_FILE" "No Kafka properties found. Skipping Kafka check."
 fi
 
 # Log completion message
