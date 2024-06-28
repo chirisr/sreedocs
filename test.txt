@@ -1166,3 +1166,67 @@ Pod Lifecycle:
 
 Both the main container and the sidecar container continue to run for the pod's lifetime, providing the main application functionality and auxiliary services, respectively.
 This setup ensures that the main application does not start until all specified services are confirmed to be up and reachable. The sidecar container runs alongside the main container, supporting its operations as needed.
+
+
+
+
+
+Deployment Initialization:
+
+When the DeploymentConfig is applied, OpenShift creates a pod based on the specified template.
+Init Container Execution:
+
+Init containers run sequentially before any of the main containers start. They must complete successfully for the pod initialization process to continue.
+
+Init Container: check-redis:
+
+This container is responsible for checking if the Redis service is up and running.
+It uses the busybox image to execute a script that pings the Redis server at redis-host on port 6379.
+The script runs in a loop, continuously pinging Redis until it receives a PONG response.
+Once the PONG response is received, indicating that Redis is up, the init container completes successfully.
+If the Redis service is not up, the init container will keep retrying, effectively blocking the startup of the main containers until Redis is available.
+Main Containers Startup:
+
+After all init containers have successfully completed, the main containers start simultaneously.
+
+Sidecar Container: sidecar-container:
+
+This container runs a service that is required by the main application container.
+It includes readiness and liveness probes to ensure it is healthy.
+The readiness probe checks the /health endpoint on port 8081 to determine if the sidecar container is ready to serve traffic.
+The liveness probe also checks the /health endpoint to ensure the container is still running and healthy.
+The container runs a command that touches a file (/data/sidecar-ready) and then sleeps indefinitely, simulating readiness.
+Main Application Container: main-app:
+
+This container runs the main application.
+It includes readiness and liveness probes to ensure it is healthy.
+The readiness probe checks the /health endpoint on port 8080 to determine if the main application container is ready to serve traffic.
+The liveness probe also checks the /health endpoint to ensure the container is still running and healthy.
+The postStart lifecycle hook is configured to ensure the main application waits for the sidecar container to be ready before starting fully.
+PostStart Lifecycle Hook Execution:
+
+Main Application Container's postStart Hook:
+The postStart hook runs a script after the main application container starts but before it begins handling requests.
+The script continuously checks the sidecar container's health endpoint (http://localhost:8081/health) until it gets a "healthy" response.
+This ensures that the sidecar container is up and running before the main application container starts serving traffic.
+The script prints messages to the container's log, indicating whether it is waiting for the sidecar to become healthy or has detected that the sidecar is healthy.
+Once the sidecar is confirmed to be healthy, the script exits, allowing the main application container to proceed with its startup process.
+Container Startup Sequence Summary
+check-redis Init Container:
+
+Ensures Redis is up and running.
+Blocks main container startup until Redis is ready.
+sidecar-container:
+
+Starts alongside the main application container after init containers complete.
+Provides a necessary service for the main application.
+Readiness and liveness probes ensure it is healthy.
+main-app Container:
+
+Starts after init containers complete.
+Uses a postStart hook to wait for the sidecar container to be healthy before proceeding.
+Readiness and liveness probes ensure it is healthy.
+Key Points
+Init Containers: Run before the main containers and ensure critical dependencies (like Redis) are available. They block the main container startup if dependencies are not ready.
+Sidecar Container: Starts with the main application container and provides auxiliary services. Readiness and liveness probes ensure it is functional.
+PostStart Hook: Ensures the main application waits for the sidecar container to be fully ready before starting its operations, enhancing the robustness of the initialization process.
