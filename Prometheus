@@ -163,3 +163,32 @@ Alert Triggering: If conditions are met, alerts are triggered.
 Alert Dispatching: Alerts are sent to Alertmanager.
 Email Notification: Alertmanager sends notifications based on its configuration.
 This setup ensures you are alerted via email if specific conditions are met in your main application or sidecar container, providing a robust monitoring and alerting solution within your OpenShift environment.
+
+
+      - alert: HighJVMHeapUsage
+        expr: jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} > ${JVM_HEAP_USAGE_THRESHOLD}
+        for: 5m
+        labels:
+          severity: warning
+          alertname: HighJVMHeapUsage
+        annotations:
+          summary: "High JVM Heap Usage in ${APP_NAME} {{ $labels.instance }}"
+          description: "JVM heap usage in ${APP_NAME} instance {{ $labels.instance }} is above ${JVM_HEAP_USAGE_THRESHOLD} for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+      - alert: HighJVMMemoryUsage
+        expr: jvm_memory_used_bytes{area="nonheap"} / jvm_memory_max_bytes{area="nonheap"} > ${JVM_NONHEAP_USAGE_THRESHOLD}
+        for: 5m
+        labels:
+          severity: warning
+          alertname: HighJVMMemoryUsage
+        annotations:
+          summary: "High JVM Non-Heap Usage in ${APP_NAME} {{ $labels.instance }}"
+          description: "JVM non-heap usage in ${APP_NAME} instance {{ $labels.instance }} is above ${JVM_NONHEAP_USAGE_THRESHOLD} for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+      - alert: HighGCPauseTime
+        expr: rate(jvm_gc_pause_seconds_sum[5m]) > ${GC_PAUSE_THRESHOLD}
+        for: 5m
+        labels:
+          severity: critical
+          alertname: HighGCPauseTime
+        annotations:
+          summary: "High GC Pause Time in ${APP_NAME} {{ $labels.instance }}"
+          description: "GC pause time in ${APP_NAME} instance {{ $labels.instance }} is above ${GC_PAUSE_THRESHOLD} seconds over the last 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
