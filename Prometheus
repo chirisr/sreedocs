@@ -192,3 +192,189 @@ This setup ensures you are alerted via email if specific conditions are met in y
         annotations:
           summary: "High GC Pause Time in ${APP_NAME} {{ $labels.instance }}"
           description: "GC pause time in ${APP_NAME} instance {{ $labels.instance }} is above ${GC_PAUSE_THRESHOLD} seconds over the last 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+
+
+
+
+
+To create a Helm chart for the Prometheus rules configuration and publish it to a Helm chart registry, you need to follow these steps:
+
+Create the Helm chart directory structure.
+Define the Chart metadata.
+Create the Prometheus rules template.
+Define the values file.
+Package the Helm chart.
+Publish the Helm chart to a registry.
+Here’s a step-by-step guide:
+
+Step 1: Create the Helm Chart Directory Structure
+sh
+Copy code
+helm create prometheus-rules-chart
+cd prometheus-rules-chart
+This creates a basic Helm chart structure. Remove unnecessary files for simplicity:
+
+sh
+Copy code
+rm -rf templates/*.yaml
+Step 2: Define the Chart Metadata
+Edit the Chart.yaml file to provide metadata for your Helm chart:
+
+Chart.yaml
+yaml
+Copy code
+apiVersion: v2
+name: prometheus-rules-chart
+description: A Helm chart for Prometheus rules configuration
+version: 0.1.0
+appVersion: "1.0"
+Step 3: Create the Prometheus Rules Template
+Create the prometheus-rules.yaml template file in the templates directory. This file will contain the Prometheus rule definitions with placeholders that Helm will replace with values from values.yaml.
+
+templates/prometheus-rules.yaml
+yaml
+Copy code
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Values.appName }}-rules
+  namespace: {{ .Values.namespace }}
+spec:
+  groups:
+    - name: {{ .Values.appName }}.rules
+      rules:
+        - alert: HighMemoryUsage
+          expr: container_memory_usage_bytes{container="{{ .Values.mainApp.containerName }}"} * on(pod, namespace) group_left() (kube_pod_status_ready{condition="true"} == 1) > {{ .Values.mainApp.memoryThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+            alertname: HighMemoryUsage{{ .Values.mainApp.containerName }}
+          annotations:
+            summary: "High Memory Usage on {{ .Values.mainApp.containerName }} {{ $labels.pod }}"
+            description: "Memory usage in {{ .Values.mainApp.containerName }} pod {{ $labels.pod }} is above {{ .Values.mainApp.memoryThreshold }} bytes for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+        - alert: HighCpuUsage
+          expr: rate(container_cpu_usage_seconds_total{container="{{ .Values.mainApp.containerName }}"}[1m]) * on(pod, namespace) group_left() (kube_pod_status_ready{condition="true"} == 1) > {{ .Values.mainApp.cpuThreshold }}
+          for: 5m
+          labels:
+            severity: critical
+            alertname: HighCpuUsage{{ .Values.mainApp.containerName }}
+          annotations:
+            summary: "High CPU Usage on {{ .Values.mainApp.containerName }} {{ $labels.pod }}"
+            description: "CPU usage in {{ .Values.mainApp.containerName }} pod {{ $labels.pod }} is above {{ .Values.mainApp.cpuThreshold }}% for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+        - alert: HighJVMHeapUsage
+          expr: jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} > {{ .Values.javaApp.jvmHeapUsageThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+            alertname: HighJVMHeapUsage
+          annotations:
+            summary: "High JVM Heap Usage in {{ .Values.appName }} {{ $labels.instance }}"
+            description: "JVM heap usage in {{ .Values.appName }} instance {{ $labels.instance }} is above {{ .Values.javaApp.jvmHeapUsageThreshold }} for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+        - alert: HighJVMMemoryUsage
+          expr: jvm_memory_used_bytes{area="nonheap"} / jvm_memory_max_bytes{area="nonheap"} > {{ .Values.javaApp.jvmNonheapUsageThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+            alertname: HighJVMMemoryUsage
+          annotations:
+            summary: "High JVM Non-Heap Usage in {{ .Values.appName }} {{ $labels.instance }}"
+            description: "JVM non-heap usage in {{ .Values.appName }} instance {{ $labels.instance }} is above {{ .Values.javaApp.jvmNonheapUsageThreshold }} for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+        - alert: HighGCPauseTime
+          expr: rate(jvm_gc_pause_seconds_sum[5m]) > {{ .Values.javaApp.gcPauseThreshold }}
+          for: 5m
+          labels:
+            severity: critical
+            alertname: HighGCPauseTime
+          annotations:
+            summary: "High GC Pause Time in {{ .Values.appName }} {{ $labels.instance }}"
+            description: "GC pause time in {{ .Values.appName }} instance {{ $labels.instance }} is above {{ .Values.javaApp.gcPauseThreshold }} seconds over the last 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+        - alert: HighMemoryUsage
+          expr: container_memory_usage_bytes{container="{{ .Values.sidecar.containerName }}"} * on(pod, namespace) group_left() (kube_pod_status_ready{condition="true"} == 1) > {{ .Values.sidecar.memoryThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+            alertname: HighMemoryUsage{{ .Values.sidecar.containerName }}
+          annotations:
+            summary: "High Memory Usage on {{ .Values.sidecar.containerName }} {{ $labels.pod }}"
+            description: "Memory usage in {{ .Values.sidecar.containerName }} pod {{ $labels.pod }} is above {{ .Values.sidecar.memoryThreshold }} bytes for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+        - alert: HighCpuUsage
+          expr: rate(container_cpu_usage_seconds_total{container="{{ .Values.sidecar.containerName }}"}[1m]) * on(pod, namespace) group_left() (kube_pod_status_ready{condition="true"} == 1) > {{ .Values.sidecar.cpuThreshold }}
+          for: 5m
+          labels:
+            severity: critical
+            alertname: HighCpuUsage{{ .Values.sidecar.containerName }}
+          annotations:
+            summary: "High CPU Usage on {{ .Values.sidecar.containerName }} {{ $labels.pod }}"
+            description: "CPU usage in {{ .Values.sidecar.containerName }} pod {{ $labels.pod }} is above {{ .Values.sidecar.cpuThreshold }}% for more than 5 minutes.\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+Step 4: Define the Values File
+Define the default values for the placeholders in the values.yaml file. Users can override these values when deploying the Helm chart.
+
+values.yaml
+yaml
+Copy code
+appName: my-java-app
+namespace: default
+
+mainApp:
+  containerName: main-app
+  memoryThreshold: 500000000  # 500MB
+  cpuThreshold: 0.8           # 80%
+
+sidecar:
+  containerName: sidecar
+  memoryThreshold: 200000000  # 200MB
+  cpuThreshold: 0.5           # 50%
+
+javaApp:
+  jvmHeapUsageThreshold: 0.9  # 90%
+  jvmNonheapUsageThreshold: 0.9  # 90%
+  gcPauseThreshold: 0.5  # 0.5 seconds
+Step 5: Package the Helm Chart
+Package the Helm chart using the helm package command:
+
+sh
+Copy code
+helm package .
+This will create a .tgz file, which is the packaged Helm chart.
+
+Step 6: Publish the Helm Chart to a Registry
+You can use a Helm chart repository like ChartMuseum, Harbor, or an artifact repository like Nexus or JFrog Artifactory. For simplicity, we'll use ChartMuseum as an example.
+
+Install ChartMuseum:
+
+Follow the instructions to install ChartMuseum from the official ChartMuseum documentation.
+
+Upload the Helm Chart:
+
+Once ChartMuseum is installed and running, you can upload the Helm chart using the curl command:
+
+sh
+Copy code
+curl --data-binary "@prometheus-rules-chart-0.1.0.tgz" http://<chartmuseum-url>/api/charts
+Replace <chartmuseum-url> with the URL of your ChartMuseum instance.
+
+Add the Repository to Helm:
+
+Add your ChartMuseum repository to Helm:
+
+sh
+Copy code
+helm repo add my-charts http://<chartmuseum-url>
+Update the repository index:
+
+sh
+Copy code
+helm repo update
+Install the Helm Chart from the Repository:
+
+Now you can install the Helm chart from the repository:
+
+sh
+Copy code
+helm install my-prometheus-rules my-charts/prometheus-rules-chart
+You can override values using the --set flag or by providing a custom values file:
+
+sh
+Copy code
+helm install my-prometheus-rules my-charts/prometheus-rules-chart --values custom-values.yaml
+This completes the process of creating a Helm chart for the Prometheus rules configuration, packaging it, and publishing it to a Helm chart registry.
