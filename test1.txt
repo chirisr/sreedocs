@@ -56,6 +56,32 @@ load_properties() {
     fi
 }
 
+# Function to extract host and port from a given input
+extract_host_port() {
+    local input=$1
+    local default_port=$2
+    local host
+    local port
+
+    if [[ $input =~ ^http[s]?:// ]]; then
+        # Remove the protocol (http:// or https://)
+        input=${input#http://}
+        input=${input#https://}
+    fi
+
+    if [[ $input =~ : ]]; then
+        # Split host and port
+        host=${input%%:*}
+        port=${input##*:}
+    else
+        # Use default port if only host is provided
+        host=$input
+        port=$default_port
+    fi
+
+    echo "$host,$port"
+}
+
 # Function to check the status of the service
 check_service_status() {
     local host=$1
@@ -94,13 +120,11 @@ KAFKA_PROPERTIES_PRESENT=false
 # Check for Redis properties
 if [ -n "$REDIS_CLUSTER_FLAG" ] || [ -n "$REDIS_CLUSTER_HOSTS" ] || [ -n "$REDIS_CLUSTER_PORTS" ] || [ -n "$REDIS_STANDALONE_HOSTS" ] || [ -n "$REDIS_STANDALONE_PORTS" ]; then
     REDIS_PROPERTIES_PRESENT=true
-    log_message $INFO "$LOG_FILE" "Redis properties found."
 fi
 
 # Check for Kafka properties
 if [ -n "$KAFKA_ENABLED" ] || [ -n "$KAFKA_HOSTS" ] || [ -n "$KAFKA_PORTS" ]; then
     KAFKA_PROPERTIES_PRESENT=true
-    log_message $INFO "$LOG_FILE" "Kafka properties found."
 fi
 
 # Fail if neither Redis nor Kafka properties are found
@@ -127,13 +151,22 @@ check_redis_status() {
         log_message $INFO "$LOG_FILE" "Checking Redis Standalone services."
     fi
 
+    # If only one port is provided, use it for all hosts
+    if [ ${#ports_array[@]} -eq 1 ]; then
+        local single_port=${ports_array[0]}
+        ports_array=()
+        for (( i=0; i<${#hosts_array[@]}; i++ )); do
+            ports_array[i]=$single_port
+        done
+    fi
+
     for i in "${!hosts_array[@]}"; do
-        if [ ${#ports_array[@]} -eq 1 ]; then
-            port="${ports_array[0]}"
-        else
-            port="${ports_array[$i]}"
-        fi
-        if ! check_service_status "${hosts_array[$i]}" "$port" "$service"; then
+        host_port=$(extract_host_port "${hosts_array[$i]}" "${ports_array[$i]}")
+        host=$(echo "$host_port" | cut -d',' -f1)
+        port=$(echo "$host_port" | cut -d',' -f2)
+        
+        if ! check_service_status "$host" "$port" "$service"; then
+            log_message $ERROR "$LOG_FILE" "Failed to connect to $service on $host:$port."
             return 1
         fi
     done
@@ -159,16 +192,24 @@ check_kafka_status() {
         IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
         IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
 
+        # If only one port is provided, use it for all hosts
+        if [ ${#KAFKA_PORTS_ARRAY[@]} -eq 1 ]; then
+            local single_port=${KAFKA_PORTS_ARRAY[0]}
+            KAFKA_PORTS_ARRAY=()
+            for (( i=0; i<${#KAFKA_HOSTS_ARRAY[@]}; i++ )); do
+                KAFKA_PORTS_ARRAY[i]=$single_port
+            done
+        fi
+
         # Check the status of Kafka instances
         SERVICE="Kafka"
         log_message $INFO "$LOG_FILE" "Checking Kafka services."
         for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
-            if [ ${#KAFKA_PORTS_ARRAY[@]} -eq 1 ]; then
-                port="${KAFKA_PORTS_ARRAY[0]}"
-            else
-                port="${KAFKA_PORTS_ARRAY[$i]}"
-            fi
-            if ! check_service_status "${KAFKA_HOSTS_ARRAY[$i]}" "$port" "$SERVICE"; then
+            host_port=$(extract_host_port "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}")
+            host=$(echo "$host_port" | cut -d',' -f1)
+            port=$(echo "$host_port" | cut -d',' -f2)
+            
+            if ! check_service_status "$host" "$port" "$SERVICE"; then
                 log_message $FATAL "$LOG_FILE" "One or more Kafka services are not running. Exiting with status 1."
                 exit 1
             fi
