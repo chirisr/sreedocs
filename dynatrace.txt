@@ -47,3 +47,57 @@ Summary
 Host Analysis provides a broader view of the entire host's performance, which includes all containers and processes running on it. It's useful for understanding the overall resource availability and performance of the host machine.
 Container Analysis zooms in on the specific container, offering granular details about its resource usage and health. It helps in pinpointing issues and optimizing the performance of the individual container.
 By leveraging both Host Analysis and Container Analysis, you can get a comprehensive view of your application's performance, from the overall host environment to the individual container level. This enables you to diagnose and resolve issues more effectively.
+
+
+Incoming Connections:
+
+Purpose: Shows services and endpoints connecting to your container.
+Key Metrics: Traffic patterns, connection frequency.
+Outgoing Connections:
+
+Purpose: Displays services and endpoints your container is connecting to.
+Key Metrics: Outbound traffic details.
+Host Performance:
+
+Purpose: Provides performance metrics for the host machine running your container.
+Key Metrics: CPU usage, memory usage, disk I/O, network I/O.
+Process Analysis:
+
+Purpose: Details about processes running inside your container.
+Key Metrics: CPU and memory usage per process.
+Disk Analysis:
+
+Purpose: Shows disk usage metrics.
+Key Metrics: Read/write operations, throughput, latency.
+Network Analysis:
+
+Purpose: Insights into network traffic to/from your container.
+Key Metrics: Packet rates, error rates, bandwidth usage.
+Container Analysis:
+
+Purpose: Metrics specific to the container itself.
+Key Metrics: Container CPU usage, memory usage, number of restarts.
+Memory Analysis:
+
+Purpose: Detailed memory usage metrics.
+Key Metrics: Heap/non-heap memory, garbage collection, memory leaks.
+Events:
+
+Purpose: Lists events related to your container.
+Key Metrics: Deployments, restarts, configuration changes.
+Host Analysis vs. Container Analysis
+Host Analysis:
+
+Scope: Metrics and insights related to the entire host machine.
+Purpose: Understand overall host performance and resource availability.
+Key Metrics: Host-level CPU, memory, disk I/O, network I/O.
+Container Analysis:
+
+Scope: Metrics specific to the individual container.
+Purpose: Detailed view of the container's resource consumption and health.
+Key Metrics: Container-specific CPU, memory, restarts, resource limits.
+Summary
+Incoming and Outgoing Connections: Track service interactions with your container.
+Host Performance and Container Analysis: Understand performance at both the host and container levels.
+Process, Disk, Network, and Memory Analysis: Detailed insights into specific resource usage.
+Events: Monitor changes and activities impacting your container.
