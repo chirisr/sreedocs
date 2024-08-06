@@ -1,0 +1,49 @@
+Incoming Connections:
+
+Description: Shows all the services and endpoints that are connecting to your container. This helps you understand which external entities are interacting with your container and how often these interactions occur.
+Use Case: Identify and troubleshoot connection issues, analyze traffic patterns, and ensure that expected services are communicating with your container.
+Outgoing Connections:
+
+Description: Displays the services and endpoints that your container is connecting to. This tab helps you monitor the outbound traffic from your container.
+Use Case: Ensure that your container is correctly connecting to required external services and APIs, and diagnose issues related to outbound connectivity.
+Host Performance:
+
+Description: Provides performance metrics for the host machine on which your container is running. Metrics typically include CPU usage, memory usage, disk I/O, and network I/O.
+Use Case: Monitor the overall performance of the host machine to ensure it is not a bottleneck for your container's performance.
+Process Analysis:
+
+Description: Shows detailed information about the processes running inside your container. This includes CPU and memory usage per process.
+Use Case: Identify resource-intensive processes, analyze the behavior of individual processes, and troubleshoot issues at the process level.
+Disk Analysis:
+
+Description: Displays disk usage metrics, including read/write operations, throughput, and latency.
+Use Case: Monitor disk performance, identify potential bottlenecks in disk I/O, and ensure that your container has sufficient disk resources.
+Network Analysis:
+
+Description: Provides insights into the network traffic to and from your container. Metrics include packet rates, error rates, and bandwidth usage.
+Use Case: Analyze network performance, detect network-related issues, and ensure adequate network resources for your container.
+Container Analysis:
+
+Description: Focuses on metrics specific to the container itself, such as container CPU usage, memory usage, and the number of restarts.
+Use Case: Monitor the health and performance of the container, diagnose issues related to container resource usage, and ensure container stability.
+Memory Analysis:
+
+Description: Provides detailed metrics on memory usage, including heap and non-heap memory, garbage collection activity, and memory leaks.
+Use Case: Identify memory leaks, optimize memory usage, and troubleshoot out-of-memory issues.
+Events:
+
+Description: Lists events related to your container, such as deployments, restarts, and configuration changes.
+Use Case: Track changes and events affecting your container, correlate events with performance issues, and maintain an audit trail of changes.
+Host Analysis vs. Container Analysis
+Host Analysis:
+Scope: Provides metrics and insights related to the entire host machine on which the container is running.
+Metrics: Includes CPU usage, memory usage, disk I/O, and network I/O for the entire host.
+Use Case: Useful for understanding the overall load and performance of the host machine. Helps in determining whether the host machine has sufficient resources and if it is a bottleneck for container performance.
+Container Analysis:
+Scope: Focuses on metrics specific to the container itself, independent of other containers or processes on the host.
+Metrics: Includes container-specific CPU usage, memory usage, container restarts, and resource limits.
+Use Case: Provides a detailed view of the container's resource consumption and health. Helps in diagnosing issues specific to the container, such as high CPU or memory usage, and ensuring that the container is operating within its resource limits.
+Summary
+Host Analysis provides a broader view of the entire host's performance, which includes all containers and processes running on it. It's useful for understanding the overall resource availability and performance of the host machine.
+Container Analysis zooms in on the specific container, offering granular details about its resource usage and health. It helps in pinpointing issues and optimizing the performance of the individual container.
+By leveraging both Host Analysis and Container Analysis, you can get a comprehensive view of your application's performance, from the overall host environment to the individual container level. This enables you to diagnose and resolve issues more effectively.
