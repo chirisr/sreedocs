@@ -116,3 +116,19 @@ Granular Analysis: Use the drilldown functionality to explore specific pods or e
 Alert Setup: Set up real-time alerts for critical metrics like failed events or long-duration events.
 Conclusion
 The Kafka Monitoring Dashboard provides a powerful way to track and visualize the performance of Kafka. With key metrics such as event processing counts, pod-wise event distribution, event duration analysis, and success/failure tracking, it helps ensure Kafka is running smoothly and efficiently. Using the detailed event queries table, users can drill down into specific events for further troubleshooting.
+
+index="your_index" sourcetype="kafka_logs" (_raw="*started event*" OR _raw="*init event*" OR _raw="*begin event*" OR _raw="*finished event*" OR _raw="*completed event*" OR _raw="*end event*" OR _raw="*publish success*")
+| eval event_status = case(
+    match(_raw, "started event") OR match(_raw, "init event") OR match(_raw, "begin event"), "Started",
+    match(_raw, "finished event") OR match(_raw, "completed event") OR match(_raw, "end event"), "Finished",
+    match(_raw, "publish success"), "Success"
+  )
+| transaction correlation_id startswith="Started" endswith="Finished" maxspan=30s
+| eval final_status = case(
+    searchmatch("publish success"), "Success",
+    isnull(event_status) OR NOT searchmatch("Started"), "Missing Start",
+    NOT searchmatch("Finished"), "Incomplete"
+  )
+| where final_status="Missing Start"
+| table correlation_id, raw, duration, pod
+
