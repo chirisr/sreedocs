@@ -117,15 +117,14 @@ Alert Setup: Set up real-time alerts for critical metrics like failed events or 
 Conclusion
 The Kafka Monitoring Dashboard provides a powerful way to track and visualize the performance of Kafka. With key metrics such as event processing counts, pod-wise event distribution, event duration analysis, and success/failure tracking, it helps ensure Kafka is running smoothly and efficiently. Using the detailed event queries table, users can drill down into specific events for further troubleshooting.
 
-index=<kafka_index> 
-(
-    "started message pushed" OR "request received" 
-) 
-(status="message published successfully" OR status="FAILURE") 
-| transaction correlation_id startswith=("started message pushed" OR "request received") endswith=("message published successfully" OR status="FAILURE")
-| eval request_receive_time = strftime(_time, "%Y-%m-%d %H:%M:%S"), 
-      request_complete_time = strftime(if(status="message published successfully" OR status="FAILURE", _time, null()), "%Y-%m-%d %H:%M:%S"),
-      duration = if(request_complete_time != "", round(duration, 2), null())
-| table correlation_id request_receive_time request_complete_time duration status _raw
+index=<your_index> 
+| search (message="started message pushed" OR message="request received") 
+  AND (message="message published successfully" OR message="status=FAILURE")
+| transaction correlation_id startswith="started message pushed" OR startswith="request received" endswith="message published successfully" OR endswith="status=FAILURE" 
+| eval request_receive_time=_time 
+| eval request_complete_time=_time
+| eval duration=request_complete_time - request_receive_time 
+| table correlation_id, request_receive_time, request_complete_time, duration, status, _raw
+
 
 
