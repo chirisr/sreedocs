@@ -1,231 +1,43 @@
-#!/bin/bash
+Dear [Splunk Team/Recipient's Name],
 
-# Log levels
-DEBUG=0
-INFO=1
-WARNING=2
-ERROR=3
-FATAL=4
+I hope this email finds you well. I am reaching out regarding an issue we have observed with the events being ingested into Splunk, which appear to be incomplete in certain scenarios.
 
-# Default log level
-LOG_LEVEL=$INFO
+Observations:
+At the application level, logs are being written correctly, and all start and end events are present in the raw application logs.
+When the same logs are piped into Splunk, some events appear to be missing. Specifically:
+Some events are missing the start message but have an end message.
+Some events have the start message but no corresponding end message.
+A significant number of events are complete (both start and end are present).
+These discrepancies have been verified by comparing the application-level logs and the data visible in Splunk.
 
-# Function to log messages with different log levels
-log_message() {
-    local level=$1
-    local log_file=$2
-    local message=$3
+Example:
+For a given correlation ID (<example_correlation_id>):
 
-    case $level in
-        $DEBUG)
-            level_name="DEBUG"
-            ;;
-        $INFO)
-            level_name="INFO"
-            ;;
-        $WARNING)
-            level_name="WARNING"
-            ;;
-        $ERROR)
-            level_name="ERROR"
-            ;;
-        $FATAL)
-            level_name="FATAL"
-            ;;
-        *)
-            level_name="UNKNOWN"
-            ;;
-    esac
+Application log shows both "request received" and "message published successfully".
+Splunk only displays "message published successfully".
+This behavior suggests that the issue may lie in the data pipeline between the application and Splunk.
 
-    if [ $level -ge $LOG_LEVEL ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - $level_name - $message" | tee -a "$log_file"
-    fi
-}
+Questions for Investigation:
+Are there any known limitations or issues in the Splunk ingestion pipeline (e.g., heavy forwarders, indexers, or universal forwarders) that could result in the loss of events?
+Could this be caused by a configuration issue in the Splunk forwarder or ingestion pipeline, such as:
+Maximum event size (maxEventSize) restrictions?
+Line breaking or merging rules (LINE_BREAKER, SHOULD_LINEMERGE)?
+Is there a chance that network issues or buffering settings (e.g., queueSize) are causing logs to be dropped or overwritten during high traffic?
+Are there any rate-limiting or ingestion throttling policies that might result in partial data ingestion?
+Could there be an issue with how the logs are being parsed, resulting in certain events being dropped due to format mismatches?
+Supporting Details:
+Index/Sourcetype: <provide details>
+Environment: <e.g., Development, Test, UAT>
+Log Sample:
+plaintext
+Copy code
+[Timestamp] [Pod] request received for correlation_id=<ID>
+[Timestamp] [Pod] message published successfully for correlation_id=<ID>
+Steps Taken to Validate:
+Compared raw logs at the application level with ingested logs in Splunk.
+Verified that the issue is consistent across multiple correlation IDs.
+Observed that the application logs have no missing data.
+Request:
+Could you please help investigate this issue or provide guidance on the possible causes and remediation steps? We would appreciate any insights or checks we can perform to identify the root cause.
 
-# Function to load properties from a file
-load_properties() {
-    local file="$1"
-    if [ -f "$file" ]; then
-        log_message $INFO "$LOG_FILE" "Loading properties from $file."
-        while IFS='=' read -r key value; do
-            eval "${key}='${value}'"
-        done < "$file"
-    else
-        log_message $ERROR "$LOG_FILE" "Properties file $file not found."
-        exit 1
-    fi
-}
-
-# Function to extract host and port from a given input
-extract_host_port() {
-    local input=$1
-    local default_port=$2
-    local host
-    local port
-
-    if [[ $input =~ ^http[s]?:// ]]; then
-        # Remove the protocol (http:// or https://)
-        input=${input#http://}
-        input=${input#https://}
-    fi
-
-    if [[ $input =~ : ]]; then
-        # Split host and port
-        host=${input%%:*}
-        port=${input##*:}
-    else
-        # Use default port if only host is provided
-        host=$input
-        port=$default_port
-    fi
-
-    echo "$host,$port"
-}
-
-# Function to check the status of the service
-check_service_status() {
-    local host=$1
-    local port=$2
-    local service=$3
-
-    if [ -z "$host" ] || [ -z "$port" ]; then
-        log_message $ERROR "$LOG_FILE" "Host or port is empty for $service service."
-        return 1
-    fi
-
-    log_message $DEBUG "$LOG_FILE" "Checking $service service on $host:$port..."
-
-    if (echo > /dev/tcp/$host/$port) >/dev/null 2>&1; then
-        log_message $INFO "$LOG_FILE" "$service service is running on $host:$port."
-        return 0
-    else
-        log_message $ERROR "$LOG_FILE" "$service service is not running on $host:$port."
-        return 1
-    fi
-}
-
-# Initialize log file
-LOG_FILE="/mnt/scripts/service_check.log"
-echo "Service Check Log" > "$LOG_FILE"
-log_message $INFO "$LOG_FILE" "Starting service checks."
-
-# Load properties from file if present
-PROPERTIES_FILE="/mnt/config/config.properties"
-load_properties "$PROPERTIES_FILE"
-
-# Initialize flags to check presence of properties
-REDIS_PROPERTIES_PRESENT=false
-KAFKA_PROPERTIES_PRESENT=false
-
-# Check for Redis properties
-if [ -n "$REDIS_CLUSTER_FLAG" ] || [ -n "$REDIS_CLUSTER_HOSTS" ] || [ -n "$REDIS_CLUSTER_PORTS" ] || [ -n "$REDIS_STANDALONE_HOSTS" ] || [ -n "$REDIS_STANDALONE_PORTS" ]; then
-    REDIS_PROPERTIES_PRESENT=true
-fi
-
-# Check for Kafka properties
-if [ -n "$KAFKA_ENABLED" ] || [ -n "$KAFKA_HOSTS" ] || [ -n "$KAFKA_PORTS" ]; then
-    KAFKA_PROPERTIES_PRESENT=true
-fi
-
-# Fail if neither Redis nor Kafka properties are found
-if [ "$REDIS_PROPERTIES_PRESENT" = false ] && [ "$KAFKA_PROPERTIES_PRESENT" = false ]; then
-    log_message $FATAL "$LOG_FILE" "Neither Redis nor Kafka properties found. Exiting."
-    exit 1
-fi
-
-# Function to check Redis status based on the cluster flag
-check_redis_status() {
-    local hosts_array
-    local ports_array
-    local service
-
-    if [ "$REDIS_CLUSTER_FLAG" = true ]; then
-        IFS=',' read -r -a hosts_array <<< "$REDIS_CLUSTER_HOSTS"
-        IFS=',' read -r -a ports_array <<< "$REDIS_CLUSTER_PORTS"
-        service="Redis Cluster"
-        log_message $INFO "$LOG_FILE" "Checking Redis Cluster services."
-    else
-        IFS=',' read -r -a hosts_array <<< "$REDIS_STANDALONE_HOSTS"
-        IFS=',' read -r -a ports_array <<< "$REDIS_STANDALONE_PORTS"
-        service="Redis Standalone"
-        log_message $INFO "$LOG_FILE" "Checking Redis Standalone services."
-    fi
-
-    # If only one port is provided, use it for all hosts
-    if [ ${#ports_array[@]} -eq 1 ]; then
-        local single_port=${ports_array[0]}
-        ports_array=()
-        for (( i=0; i<${#hosts_array[@]}; i++ )); do
-            ports_array[i]=$single_port
-        done
-    fi
-
-    for i in "${!hosts_array[@]}"; do
-        host_port=$(extract_host_port "${hosts_array[$i]}" "${ports_array[$i]}")
-        host=$(echo "$host_port" | cut -d',' -f1)
-        port=$(echo "$host_port" | cut -d',' -f2)
-        
-        if ! check_service_status "$host" "$port" "$service"; then
-            log_message $ERROR "$LOG_FILE" "Failed to connect to $service on $host:$port."
-            return 1
-        fi
-    done
-}
-
-# Check the status of Redis instances if properties are present
-if [ "$REDIS_PROPERTIES_PRESENT" = true ]; then
-    if ! check_redis_status; then
-        log_message $FATAL "$LOG_FILE" "One or more Redis services are not running. Exiting with status 1."
-        exit 1
-    fi
-fi
-
-# Function to check Kafka status if enabled
-check_kafka_status() {
-    if [ "$KAFKA_ENABLED" = true ]; then
-        if [ -z "$KAFKA_HOSTS" ] || [ -z "$KAFKA_PORTS" ]; then
-            log_message $FATAL "$LOG_FILE" "KAFKA_HOSTS or KAFKA_PORTS is not set."
-            exit 1
-        fi
-
-        # Convert comma-separated Kafka hosts and ports into arrays
-        IFS=',' read -r -a KAFKA_HOSTS_ARRAY <<< "$KAFKA_HOSTS"
-        IFS=',' read -r -a KAFKA_PORTS_ARRAY <<< "$KAFKA_PORTS"
-
-        # If only one port is provided, use it for all hosts
-        if [ ${#KAFKA_PORTS_ARRAY[@]} -eq 1 ]; then
-            local single_port=${KAFKA_PORTS_ARRAY[0]}
-            KAFKA_PORTS_ARRAY=()
-            for (( i=0; i<${#KAFKA_HOSTS_ARRAY[@]}; i++ )); do
-                KAFKA_PORTS_ARRAY[i]=$single_port
-            done
-        fi
-
-        # Check the status of Kafka instances
-        SERVICE="Kafka"
-        log_message $INFO "$LOG_FILE" "Checking Kafka services."
-        for i in "${!KAFKA_HOSTS_ARRAY[@]}"; do
-            host_port=$(extract_host_port "${KAFKA_HOSTS_ARRAY[$i]}" "${KAFKA_PORTS_ARRAY[$i]}")
-            host=$(echo "$host_port" | cut -d',' -f1)
-            port=$(echo "$host_port" | cut -d',' -f2)
-            
-            if ! check_service_status "$host" "$port" "$SERVICE"; then
-                log_message $FATAL "$LOG_FILE" "One or more Kafka services are not running. Exiting with status 1."
-                exit 1
-            fi
-        done
-    else
-        log_message $INFO "$LOG_FILE" "Kafka service check is disabled."
-    fi
-}
-
-# Check the status of Kafka instances if properties are present
-if [ "$KAFKA_PROPERTIES_PRESENT" = true ]; then
-    if ! check_kafka_status; then
-        exit 1
-    fi
-fi
-
-# Log completion message
-log_message $INFO "$LOG_FILE" "Service check completed successfully."
-exit 0
+Looking forward to your response.
