@@ -117,14 +117,77 @@ Alert Setup: Set up real-time alerts for critical metrics like failed events or 
 Conclusion
 The Kafka Monitoring Dashboard provides a powerful way to track and visualize the performance of Kafka. With key metrics such as event processing counts, pod-wise event distribution, event duration analysis, and success/failure tracking, it helps ensure Kafka is running smoothly and efficiently. Using the detailed event queries table, users can drill down into specific events for further troubleshooting.
 
-index=<your_index> 
-| search (message="started message pushed" OR message="request received") 
-  AND (message="message published successfully" OR message="status=FAILURE")
-| transaction correlation_id startswith="started message pushed" OR startswith="request received" endswith="message published successfully" OR endswith="status=FAILURE" 
-| eval request_receive_time=_time 
-| eval request_complete_time=_time
-| eval duration=request_complete_time - request_receive_time 
-| table correlation_id, request_receive_time, request_complete_time, duration, status, _raw
+index=<your_index> sourcetype=<your_sourcetype>
+("request received" OR "started publishing" OR "status=FAILURE" OR "message published successfully")
+| eval transaction_start = if(searchmatch("request received") OR searchmatch("started publishing"), "start", null)
+| eval transaction_end = if(searchmatch("status=FAILURE") OR searchmatch("message published successfully"), "end", null)
+| eval event_type = if(isnotnull(transaction_start), "start", if(isnotnull(transaction_end), "end", "unknown"))
+| streamstats count as event_id by correlation_id
+| stats earliest(_time) as start_time latest(_time) as end_time values(event_type) as event_types values(transaction_end) as end_values by correlation_id event_id
+| eval status = case(
+    mvfind(event_types, "start") >= 0 AND mvfind(event_types, "end") >= 0 AND mvfind(end_values, "message published successfully") != -1, "success",
+    mvfind(event_types, "start") >= 0 AND mvfind(event_types, "end") >= 0 AND mvfind(end_values, "status=FAILURE") != -1, "failure",
+    mvfind(event_types, "start") >= 0 AND mvfind(event_types, "end") < 0, "incomplete",
+    mvfind(event_types, "end") >= 0 AND mvfind(event_types, "start") < 0, "incomplete",
+    true(), "unknown"
+)
+| eval duration = if(status="success" OR status="failure", end_time - start_time, null)
+| eval duration_bucket = case(
+    duration < 1, "< 1 sec",
+    duration >= 1 AND duration <= 5, "1-5 sec",
+    duration > 5 AND duration <= 10, "5-10 sec",
+    duration > 10, "> 10 sec",
+    true(), "unknown"
+)
+| stats count by duration_bucket status
+| appendpipe [ 
+    | makeresults 
+    | eval duration_bucket = mvappend("< 1 sec", "1-5 sec", "5-10 sec", "> 10 sec")
+    | mvexpand duration_bucket
+    | eval status = mvappend("success", "failure", "incomplete")
+    | mvexpand status
+    | eval count = 0
+    | fields duration_bucket status count 
+]
+| stats sum(count) as count by duration_bucket status
+| fillnull value=0 count
 
 
 
+
+index=<your_index> sourcetype=<your_sourcetype>
+("request received" OR "started publishing" OR "status=FAILURE" OR "message published successfully")
+| eval transaction_start = if(searchmatch("request received") OR searchmatch("started publishing"), "start", null)
+| eval transaction_end = if(searchmatch("status=FAILURE") OR searchmatch("message published successfully"), "end", null)
+| eval event_type = if(isnotnull(transaction_start), "start", if(isnotnull(transaction_end), "end", "unknown"))
+| streamstats count as event_id by correlation_id
+| stats earliest(_time) as start_time latest(_time) as end_time values(event_type) as event_types values(transaction_end) as end_values by correlation_id event_id
+| eval event_types_str = mvjoin(event_types, ",")  /* Convert event_types to a single string */
+| eval end_values_str = mvjoin(end_values, ",")   /* Convert end_values to a single string */
+| eval status = case(
+    like(event_types_str, "%start%") AND like(event_types_str, "%end%") AND like(end_values_str, "%message published successfully%"), "success",
+    like(event_types_str, "%start%") AND like(event_types_str, "%end%") AND like(end_values_str, "%status=FAILURE%"), "failure",
+    like(event_types_str, "%start%") AND NOT like(event_types_str, "%end%"), "incomplete",
+    NOT like(event_types_str, "%start%") AND like(event_types_str, "%end%"), "incomplete",
+    true(), "unknown"
+)
+| eval duration = if(status="success" OR status="failure", end_time - start_time, null)
+| eval duration_bucket = case(
+    duration < 1, "< 1 sec",
+    duration >= 1 AND duration <= 5, "1-5 sec",
+    duration > 5 AND duration <= 10, "5-10 sec",
+    duration > 10, "> 10 sec",
+    true(), "unknown"
+)
+| stats count by duration_bucket status
+| appendpipe [ 
+    | makeresults 
+    | eval duration_bucket = mvappend("< 1 sec", "1-5 sec", "5-10 sec", "> 10 sec")
+    | mvexpand duration_bucket
+    | eval status = mvappend("success", "failure", "incomplete")
+    | mvexpand status
+    | eval count = 0
+    | fields duration_bucket status count 
+]
+| stats sum(count) as count by duration_bucket status
+| fillnull value=0 count
