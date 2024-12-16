@@ -1,193 +1,41 @@
-Kafka Monitoring Dashboard Documentation
-Overview
-The Kafka Monitoring Dashboard provides a comprehensive view of Kafka performance, including the processing of events across Kafka pods, event durations, and success/failure metrics. This dashboard is essential for tracking Kafka's real-time data processing capabilities, ensuring timely identification of potential bottlenecks or failures.
+2. Redirect Logs to Persistent Storage
+Configure your application to write logs to a mounted persistent volume instead of default stdout/stderr. In your deployment configuration:
 
-Metrics Displayed on the Dashboard:
-Number of Events Processed: Total number of events processed by Kafka during a specified time range.
-Number of Events Processed per Pod: A breakdown of the number of events processed by each Kafka pod.
-Events with Duration Greater than 10 Seconds: Displays events that took longer than 10 seconds to process, which might indicate performance issues.
-Number of Successful Events: Displays the number of successfully processed events in the time range.
-Number of Failed Events: Displays the number of events that failed to be processed.
-Detailed Event Queries Table by Status: A table displaying events categorized by their status (success, failure, etc.) with additional event details.
-Dashboard Panels
-1. Total Number of Events Processed
-This panel shows the total number of events that Kafka processed in the specified time range.
+Create a Persistent Volume Claim (PVC).
+Mount the PVC to a directory where your application writes its logs.
+This ensures logs are stored even if the container is restarted.
 
-Query:
+3. Enable Cluster-Level Logging with OpenShift Logging
+Deploy a centralized logging solution such as OpenShift Logging (EFK stack):
 
-spl
+Elasticsearch: Stores logs for searching and visualization.
+Fluentd: Collects logs from all containers and forwards them to Elasticsearch.
+Kibana: Visualizes logs stored in Elasticsearch.
+By enabling OpenShift Logging, logs from all containers in the cluster can be retained for a configurable period.
+
+4. Use External Logging Solutions
+Integrate your application with external logging systems such as:
+
+Splunk: Forward logs using a sidecar container or Fluentd/Logstash.
+Loggly, Datadog, or other logging-as-a-service platforms.
+Use a log aggregation agent (e.g., Fluentd or Filebeat) to push logs to these systems.
+5. Use a Sidecar Container for Log Management
+Run a sidecar container alongside your application that reads the logs from the container and forwards them to an external logging system or persistent storage.
+
+For example:
+
+Mount the /var/log/containers directory from the host into the sidecar container.
+Use Fluentd, Logstash, or another tool to process and forward logs.
+6. Verify OpenShift Log Rotation Settings
+OpenShift uses log rotation by default. You can modify the settings to increase the retention duration and size:
+
+For Kubernetes/OpenShift native logging, adjust log-rotation-size and log-rotation-max-files.
+yaml
 Copy code
-index=kafka_logs
-| stats count as total_events
-Description: Displays the total number of events processed during the time range.
-Visualization: Single value, showing the count of processed events.
-2. Number of Events Processed per Pod
-This panel shows the number of events processed by each Kafka pod.
-
-Query:
-
-spl
-Copy code
-index=kafka_logs
-| stats count by pod_name
-Description: Aggregates events based on the Kafka pod (pod_name field).
-Visualization: Bar chart or table, showing the count of events processed per pod.
-3. Events with Duration Greater Than 10 Seconds
-This panel filters and shows the events that took longer than 10 seconds to process.
-
-Query:
-
-spl
-Copy code
-index=kafka_logs
-| where duration > 10
-| stats count as long_duration_events
-Description: Filters events where the duration field is greater than 10 seconds and counts them.
-Visualization: Single value or bar chart showing the number of events with a processing duration over 10 seconds.
-4. Number of Successful Events
-This panel shows the count of events that were successfully processed by Kafka.
-
-Query:
-
-spl
-Copy code
-index=kafka_logs
-| stats count(eval(status="success")) as success_count
-Description: Counts the number of events with a status of "success".
-Visualization: Single value showing the number of successful events.
-5. Number of Failed Events
-This panel shows the count of events that failed during processing.
-
-Query:
-
-spl
-Copy code
-index=kafka_logs
-| stats count(eval(status="failure")) as failure_count
-Description: Counts the number of events with a status of "failure".
-Visualization: Single value showing the number of failed events.
-6. Detailed Event Queries Table by Status
-This panel shows a detailed table of Kafka events categorized by their status (e.g., success, failure) with additional information.
-
-Query:
-
-spl
-Copy code
-index=kafka_logs
-| stats count, values(status) as status, values(pod_name) as pod_name, values(duration) as duration by event_id, _time
-| sort -_time
-Description: Displays a table of events with the following columns:
-event_id: Unique identifier of the event.
-_time: Timestamp when the event occurred.
-status: Event status (success, failure, etc.).
-pod_name: Kafka pod processing the event.
-duration: Time taken to process the event.
-Visualization: Table with sortable columns for event details and status.
-Time Range Picker
-The dashboard includes a time range picker at the top, allowing users to specify the time range for monitoring Kafka's performance. The available time options could be:
-
-Last 15 minutes
-Last 30 minutes
-Last 1 hour
-Last 24 hours
-Custom range (user-defined)
-Filters and Drilldown Functionality
-The dashboard allows users to interact with specific panels to get more granular data:
-
-Pod Filtering: Click on any pod name in the "Number of Events Processed per Pod" panel to drill down into detailed logs for that specific pod.
-Event Duration Filtering: Click on the "Events with Duration Greater Than 10 Seconds" to view all such events in the detailed event table.
-Drilldown Example: When users click on a bar in the Number of Events Processed per Pod panel, the following query is executed:
-
-spl
-Copy code
-index=kafka_logs pod_name=$clickedPod$
-| stats count by status, _time, duration
-Where $clickedPod$ represents the pod name clicked by the user. This query will show the number of events for the selected pod with additional details.
-
-Alerting and Monitoring
-For critical performance monitoring, consider setting up alerts for the following:
-
-Events Duration Greater Than 10 Seconds: Trigger an alert when the count of events taking longer than 10 seconds exceeds a certain threshold.
-Failed Events Count: Set an alert for when the number of failed events exceeds a threshold.
-Best Practices for Dashboard Usage
-Regular Monitoring: Use the dashboard to monitor Kafka performance regularly, especially during high-traffic periods.
-Optimize Kafka Performance: Investigate high-duration events and failed events to optimize Kafka pod configurations.
-Granular Analysis: Use the drilldown functionality to explore specific pods or event durations for deeper insights.
-Alert Setup: Set up real-time alerts for critical metrics like failed events or long-duration events.
-Conclusion
-The Kafka Monitoring Dashboard provides a powerful way to track and visualize the performance of Kafka. With key metrics such as event processing counts, pod-wise event distribution, event duration analysis, and success/failure tracking, it helps ensure Kafka is running smoothly and efficiently. Using the detailed event queries table, users can drill down into specific events for further troubleshooting.
-
-index=<your_index> sourcetype=<your_sourcetype>
-("request received" OR "started publishing" OR "status=FAILURE" OR "message published successfully")
-| eval transaction_start = if(searchmatch("request received") OR searchmatch("started publishing"), "start", null)
-| eval transaction_end = if(searchmatch("status=FAILURE") OR searchmatch("message published successfully"), "end", null)
-| eval event_type = if(isnotnull(transaction_start), "start", if(isnotnull(transaction_end), "end", "unknown"))
-| streamstats count as event_id by correlation_id
-| stats earliest(_time) as start_time latest(_time) as end_time values(event_type) as event_types values(transaction_end) as end_values by correlation_id event_id
-| eval status = case(
-    mvfind(event_types, "start") >= 0 AND mvfind(event_types, "end") >= 0 AND mvfind(end_values, "message published successfully") != -1, "success",
-    mvfind(event_types, "start") >= 0 AND mvfind(event_types, "end") >= 0 AND mvfind(end_values, "status=FAILURE") != -1, "failure",
-    mvfind(event_types, "start") >= 0 AND mvfind(event_types, "end") < 0, "incomplete",
-    mvfind(event_types, "end") >= 0 AND mvfind(event_types, "start") < 0, "incomplete",
-    true(), "unknown"
-)
-| eval duration = if(status="success" OR status="failure", end_time - start_time, null)
-| eval duration_bucket = case(
-    duration < 1, "< 1 sec",
-    duration >= 1 AND duration <= 5, "1-5 sec",
-    duration > 5 AND duration <= 10, "5-10 sec",
-    duration > 10, "> 10 sec",
-    true(), "unknown"
-)
-| stats count by duration_bucket status
-| appendpipe [ 
-    | makeresults 
-    | eval duration_bucket = mvappend("< 1 sec", "1-5 sec", "5-10 sec", "> 10 sec")
-    | mvexpand duration_bucket
-    | eval status = mvappend("success", "failure", "incomplete")
-    | mvexpand status
-    | eval count = 0
-    | fields duration_bucket status count 
-]
-| stats sum(count) as count by duration_bucket status
-| fillnull value=0 count
-
-
-
-
-index=<your_index> sourcetype=<your_sourcetype>
-("request received" OR "started publishing" OR "status=FAILURE" OR "message published successfully")
-| eval transaction_start = if(searchmatch("request received") OR searchmatch("started publishing"), "start", null)
-| eval transaction_end = if(searchmatch("status=FAILURE") OR searchmatch("message published successfully"), "end", null)
-| eval event_type = if(isnotnull(transaction_start), "start", if(isnotnull(transaction_end), "end", "unknown"))
-| streamstats count as event_id by correlation_id
-| stats earliest(_time) as start_time latest(_time) as end_time values(event_type) as event_types values(transaction_end) as end_values by correlation_id event_id
-| eval event_types_str = mvjoin(event_types, ",")  /* Convert event_types to a single string */
-| eval end_values_str = mvjoin(end_values, ",")   /* Convert end_values to a single string */
-| eval status = case(
-    like(event_types_str, "%start%") AND like(event_types_str, "%end%") AND like(end_values_str, "%message published successfully%"), "success",
-    like(event_types_str, "%start%") AND like(event_types_str, "%end%") AND like(end_values_str, "%status=FAILURE%"), "failure",
-    like(event_types_str, "%start%") AND NOT like(event_types_str, "%end%"), "incomplete",
-    NOT like(event_types_str, "%start%") AND like(event_types_str, "%end%"), "incomplete",
-    true(), "unknown"
-)
-| eval duration = if(status="success" OR status="failure", end_time - start_time, null)
-| eval duration_bucket = case(
-    duration < 1, "< 1 sec",
-    duration >= 1 AND duration <= 5, "1-5 sec",
-    duration > 5 AND duration <= 10, "5-10 sec",
-    duration > 10, "> 10 sec",
-    true(), "unknown"
-)
-| stats count by duration_bucket status
-| appendpipe [ 
-    | makeresults 
-    | eval duration_bucket = mvappend("< 1 sec", "1-5 sec", "5-10 sec", "> 10 sec")
-    | mvexpand duration_bucket
-    | eval status = mvappend("success", "failure", "incomplete")
-    | mvexpand status
-    | eval count = 0
-    | fields duration_bucket status count 
-]
-| stats sum(count) as count by duration_bucket status
-| fillnull value=0 count
+spec:
+  containers:
+  - name: app
+    image: my-app:latest
+    env:
+    - name: LOG_OPTS
+      value: "--log-opt max-size=10m --log-opt max-file=5"
