@@ -1,41 +1,154 @@
-2. Redirect Logs to Persistent Storage
-Configure your application to write logs to a mounted persistent volume instead of default stdout/stderr. In your deployment configuration:
+Sourcegraph is a developer tool designed for code search, navigation, and analysis across multiple repositories and programming languages. It enables developers to efficiently understand, explore, and update codebases, making it particularly useful in complex software environments.
+Core Capabilities of Sourcegraph
+Universal Code Search:
+Search through entire codebases, across multiple repositories and languages, in real-time.
+Supports regex, structural search, and advanced filters for precise queries.
+Code Navigation:
+Jump to definition, find references, and view usages directly from the interface.
+Provides IDE-like functionality in the browser.
+Version Control System Integration:
+Integrates seamlessly with Git-based repositories like GitHub, GitLab, and Bitbucket.
+Cross-Repository and Language Support:
+Enables search across mono-repos and distributed repos in various languages.
+Handles dependencies and cross-repository imports.
+Code Insights:
+Create visualizations and track changes over time, like identifying deprecated code usage.
+Code Monitoring:
+Set up alerts for specific patterns or changes in the codebase.
+Monitor security issues or compliance risks.
+Batch Changes (Automated Refactoring):
+Perform large-scale code changes programmatically across repositories.
+Security and Compliance:
+Identify and fix vulnerabilities and ensure code adheres to security guidelines.
 
-Create a Persistent Volume Claim (PVC).
-Mount the PVC to a directory where your application writes its logs.
-This ensures logs are stored even if the container is restarted.
+Common Query Types
+Basic Searches:
+Repo:reponame type:file test Searches for the term "test" in the repository.
+Structural Search:
+if(:[condition]) {:[body]} Finds all if statements with a specific structure.
+Regex Queries:
+repo:compliance path:.*test.* "hardcoded" Finds hardcoded keywords in compliance-related code.
+Diff Search:
+type:diff repo:reponame "deprecatedFunction" Searches for changes in repository involving deprecatedFunction.
+Code Monitoring Queries:
+TODO|FIXME Tracks occurrences of TODO or FIXME comments.
+Dependency Queries:
+file:package.json "lodash" Identifies where specific dependencies like lodash are used.
 
-3. Enable Cluster-Level Logging with OpenShift Logging
-Deploy a centralized logging solution such as OpenShift Logging (EFK stack):
+Potential Use Cases for  Applications
+Code Auditing and Compliance:
+Identify instances of insecure coding practices (e.g., hardcoded credentials).
+Ensure adherence to coding standards and regulatory requirements.
+Incident Response and Debugging:
+Quickly locate impacted code during production issues.
+Trace dependencies for critical services (e.g., payment gateway).
+Refactoring and Modernization:
+Replace deprecated APIs or libraries across multiple projects.
+Update coding patterns for performance improvements.
+Security Monitoring:
+Set up alerts for common security vulnerabilities like SQL injection patterns.
+Dependency Management:
+Identify where outdated or vulnerable third-party libraries are used.
+Performance Analysis:
+Search for bottlenecks like nested loops or synchronous operations in critical  processes.
+Knowledge Sharing:
+Enable developers to onboard faster by exploring how core  modules are implemented.
+Release Impact Analysis:
+Trace all usages of a function or module to understand how a change might affect downstream systems.
+Fraud Detection System Monitoring:
+Ensure the algorithms or rules implemented for fraud detection are version-controlled and secure.
+API Management:
+Monitor and refactor internal APIs to align with  microservices architecture.
+When onboarding a repository to Sourcegraph, it's crucial to establish roles and controls to ensure secure, efficient, and well-organized access. Below are the controls and roles that should be considered:
+By defining the below roles and controls, developers can onboard repositories securely while maintaining compliance and ensuring efficient collaboration across teams.
+Key Roles and Responsibilities
+Sourcegraph Administrator
+Responsibilities:
+Configure and maintain the Sourcegraph instance.
+Manage integrations with version control systems (e.g., GitHub, GitLab, Bitbucket).
+Set up authentication and authorization policies.
+Monitor system performance and logs.
+Manage batch changes and repository indexing.
+Controls:
+Full administrative access to Sourcegraph.
+Ability to add or remove repositories.
+Manage user roles and permissions.
+Enforce compliance and audit controls.
+Repository Owner/Manager
+Responsibilities:
+Approve repositories for onboarding to Sourcegraph.
+Define access levels for teams or individuals.
+Ensure the repository meets security and compliance requirements.
+Controls:
+Access to configure repository settings within Sourcegraph.
+Define branch and folder-level permissions (if supported by the VCS).
+Review batch change proposals before they are merged.
+Developer
+Responsibilities:
+Search, navigate, and analyze code across repositories.
+Perform read-only operations unless explicitly authorized for write access.
+Create insights, code monitoring alerts, and search queries.
+Controls:
+Read-only access by default.
+Access limited to specific repositories or teams.
+Create and review batch changes with approval from a Repository Manager.
+Security/Compliance Team
+Responsibilities:
+Monitor code for vulnerabilities, compliance violations, and policy breaches.
+Set up and monitor code alerts for security patterns (e.g., hardcoded ).
+Audit changes using search and code insights.
+Controls:
+Full read-only access across all repositories.
+Permission to create monitoring rules and alerts.
+Access to compliance reports and history logs.
+Team Leads/Project Owners
+Responsibilities:
+Manage their team's access to repositories.
+Define project-specific insights and metrics.
+Approve batch changes affecting their area of responsibility.
+Controls:
+Read/write access to repositories they manage.
+Create team-level dashboards and insights.
+Limited administrative controls for their team’s projects.
 
-Elasticsearch: Stores logs for searching and visualization.
-Fluentd: Collects logs from all containers and forwards them to Elasticsearch.
-Kibana: Visualizes logs stored in Elasticsearch.
-By enabling OpenShift Logging, logs from all containers in the cluster can be retained for a configurable period.
+Segregation of Controls
+Repository Access Levels:
+Public Repositories: Visible to all authenticated users.
+Private Repositories: Access limited based on roles or team assignments.
+Apply branch or folder-level restrictions for sensitive files (e.g., config/).
+Role-Based Access Control (RBAC):
+Define granular permissions:
+View Only: Developers, auditors, and security teams.
+Manage Repositories: Repository Owners and Sourcegraph Administrators.
+Batch Changes: Developers with explicit approval workflows.
+Authentication and Authorization:
+Integrate with Single Sign-On (SSO) or Identity Providers (e.g., Okta, LDAP).
+Enforce Multi-Factor Authentication (MFA).
+Use team-based roles for assigning repository access.
+Approval Workflows:
+Require approvals for:
+Onboarding new repositories.
+Running batch changes or automated updates.
+Creating or modifying compliance alerts.
+Audit and Monitoring:
+Maintain an audit trail for:
+Repository onboarding and access changes.
+Batch change execution and merging.
+Sensitive queries performed by users.
+Regularly review role assignments and access levels.
 
-4. Use External Logging Solutions
-Integrate your application with external logging systems such as:
-
-Splunk: Forward logs using a sidecar container or Fluentd/Logstash.
-Loggly, Datadog, or other logging-as-a-service platforms.
-Use a log aggregation agent (e.g., Fluentd or Filebeat) to push logs to these systems.
-5. Use a Sidecar Container for Log Management
-Run a sidecar container alongside your application that reads the logs from the container and forwards them to an external logging system or persistent storage.
-
-For example:
-
-Mount the /var/log/containers directory from the host into the sidecar container.
-Use Fluentd, Logstash, or another tool to process and forward logs.
-6. Verify OpenShift Log Rotation Settings
-OpenShift uses log rotation by default. You can modify the settings to increase the retention duration and size:
-
-For Kubernetes/OpenShift native logging, adjust log-rotation-size and log-rotation-max-files.
-yaml
-Copy code
-spec:
-  containers:
-  - name: app
-    image: my-app:latest
-    env:
-    - name: LOG_OPTS
-      value: "--log-opt max-size=10m --log-opt max-file=5"
+Steps to Onboard a Repository
+Repository Pre-Onboarding Checklist:
+Verify repository readiness (e.g., no hardcoded , appropriate documentation).
+Identify sensitive branches, files, or directories requiring restricted access.
+Integration Setup:
+Configure the repository in Sourcegraph using its VCS API/permissions.
+Ensure indexing and permissions sync correctly.
+Role Assignment:
+Assign roles (Admin, Manager, Developer) based on team needs.
+Limit access to sensitive repositories where necessary.
+Testing and Validation:
+Test code search, navigation, and monitoring on the onboarded repository.
+Validate access controls with a sample set of users.
+Periodic Review:
+Regularly review repository settings, permissions, and user roles.
