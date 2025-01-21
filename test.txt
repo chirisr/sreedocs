@@ -1,202 +1,151 @@
-Automating the removal of stale container images and resources in OpenShift is crucial for maintaining a clean and efficient environment. Below are recommendations for achieving this, along with the pros and cons of each approach.
+To target specific images within a namespace for cleanup, you can use OpenShift commands or API calls that allow filtering based on image names, labels, or other attributes. Here's how to implement this with oc CLI, Python, and Shell scripts.
 
-Recommendations for Automating Cleanup
-1. Use OpenShift's Built-in Image Pruning
-OpenShift provides built-in commands (oc adm prune images) for removing stale images and related resources.
+1. Pruning Specific Images Using oc CLI
+You can prune specific images in a namespace by filtering with oc adm prune images options or by explicitly deleting specific image streams or image tags.
 
-Automation: Schedule these commands using a CronJob or external scripts.
-
-Commands:
+Steps:
+List all images in the namespace to identify the ones you want to prune:
 
 bash
-Copy
-Edit
-oc adm prune images --confirm --keep-tag-revisions=5 --keep-younger-than=30d
-Pros:
-
-Simple and efficient.
-Part of OpenShift's native functionality.
-Supports detailed customization (e.g., retention policies).
-Cons:
-
-Requires elevated permissions (cluster-admin role).
-Needs careful configuration to avoid accidental deletions.
-2. Prune Builds and Deployment Configurations
-In addition to images, OpenShift allows pruning builds and deployments to free up resources.
-
-Commands:
+oc get is -n <namespace>
+Delete specific image streams or image tags:
 
 bash
-Copy
-Edit
-oc adm prune builds --confirm --keep-younger-than=30d --keep-failed-builds=false
-oc adm prune deployments --confirm --keep-younger-than=30d
-Pros:
+# Delete an image stream
+oc delete is <image-stream-name> -n <namespace>
 
-Reduces clutter in the cluster.
-Prevents old builds and deployments from consuming resources.
-Cons:
-
-Can be resource-intensive for large clusters.
-May disrupt debugging if older builds are removed prematurely.
-3. Automate with CronJobs
-Create an OpenShift CronJob to execute cleanup tasks regularly.
-
-Example CronJob YAML:
-
-yaml
-Copy
-Edit
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: cleanup-stale-resources
-spec:
-  schedule: "0 2 * * *"  # Runs daily at 2 AM
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: prune-job
-            image: openshift/origin-cli:latest
-            command:
-            - /bin/bash
-            - -c
-            - |
-              oc adm prune images --confirm --keep-tag-revisions=5 --keep-younger-than=30d
-              oc adm prune builds --confirm --keep-younger-than=30d --keep-failed-builds=false
-              oc adm prune deployments --confirm --keep-younger-than=30d
-          restartPolicy: Never
-Pros:
-
-Completely automated and runs within the cluster.
-Easy to schedule and manage.
-Cons:
-
-Relies on the cluster's scheduler and resources.
-Debugging may be harder since logs are part of the cluster.
-4. External Automation with Shell or Python Scripts
-Run cleanup scripts from an external system.
-
-Shell Script Example:
+# Delete a specific image tag
+oc tag <namespace>/<image-stream>:<tag> -d
+To prune unused images that match specific criteria, use:
 
 bash
-Copy
-Edit
+oc adm prune images --confirm --keep-tag-revisions=1 --keep-younger-than=15d --namespace=<namespace>
+2. Pruning Specific Images with a Shell Script
+You can automate the deletion of specific images using a shell script by filtering image streams based on their name or labels.
+
+Example Script:
+bash
+
 #!/bin/bash
-oc login <OpenShift-Cluster-URL> --token=<your-token>
-oc adm prune images --confirm --keep-tag-revisions=5 --keep-younger-than=30d
-oc adm prune builds --confirm --keep-younger-than=30d --keep-failed-builds=false
-oc adm prune deployments --confirm --keep-younger-than=30d
-Python Script Example:
 
+NAMESPACE="your-namespace"
+TARGET_IMAGE="target-image-name"
+
+# Log in to OpenShift
+oc login <OpenShift-Cluster-URL> --token=<your-token>
+
+# Fetch and delete specific image streams
+echo "Fetching image streams in namespace: $NAMESPACE"
+IMAGE_STREAMS=$(oc get is -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}')
+
+for IMAGE in $IMAGE_STREAMS; do
+    if [[ "$IMAGE" == "$TARGET_IMAGE" ]]; then
+        echo "Deleting image stream: $IMAGE"
+        oc delete is $IMAGE -n $NAMESPACE
+    fi
+done
+
+echo "Cleanup completed for images matching: $TARGET_IMAGE"
+3. Pruning Specific Images with Python
+Using the oc CLI or OpenShift's REST API, you can programmatically delete specific images.
+
+Using oc CLI in Python:
 python
-Copy
-Edit
+
 import subprocess
 
-def prune_resources():
-    commands = [
-        "oc adm prune images --confirm --keep-tag-revisions=5 --keep-younger-than=30d",
-        "oc adm prune builds --confirm --keep-younger-than=30d --keep-failed-builds=false",
-        "oc adm prune deployments --confirm --keep-younger-than=30d"
-    ]
-    for cmd in commands:
-        subprocess.run(cmd, shell=True)
+NAMESPACE = "your-namespace"
+TARGET_IMAGE = "target-image-name"
 
-prune_resources()
-Pros:
+def run_oc_command(command):
+    """Run an oc command and return the output."""
+    try:
+        result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE)
+        return result.stdout.decode('utf-8')
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed: {e}")
+        return None
 
-Can run from outside OpenShift (e.g., CI/CD server, admin machine).
-Offers flexibility in scheduling and integration with other tools.
-Cons:
+def delete_specific_image(namespace, image_name):
+    """Delete a specific image stream."""
+    command = f"oc delete is {image_name} -n {namespace}"
+    print(f"Deleting image: {image_name} in namespace: {namespace}")
+    run_oc_command(command)
 
-Requires secure access to the cluster.
-Needs a reliable external environment.
-5. Monitor Resource Usage with Metrics
-Track usage patterns with OpenShift's monitoring tools and alert on resource thresholds.
+def main():
+    # Log in to OpenShift
+    login_command = "oc login <OpenShift-Cluster-URL> --token=<your-token>"
+    run_oc_command(login_command)
 
-Use Prometheus and Grafana to monitor:
+    # Get all image streams in the namespace
+    command = f"oc get is -n {NAMESPACE} -o jsonpath='{{.items[*].metadata.name}}'"
+    image_streams = run_oc_command(command).split()
 
-Image size trends.
-Build history.
-Deployment counts.
-Set alerts for specific conditions:
+    for image in image_streams:
+        if image == TARGET_IMAGE:
+            delete_specific_image(NAMESPACE, TARGET_IMAGE)
 
-Disk usage approaching limits.
-Excessive number of builds or deployments.
-Pros:
+if __name__ == "__main__":
+    main()
+4. Pruning Specific Images Using OpenShift REST API
+If you want more control, you can interact directly with OpenShift's REST API.
 
-Preventive approach, avoids manual intervention.
-Better visibility into resource usage trends.
-Cons:
+Steps:
+List Image Streams: Use the API endpoint to list image streams in a namespace:
 
-Reactive rather than proactive.
-May require additional setup and configuration.
-6. OpenShift REST API Automation
-Use the OpenShift REST API to query and delete resources programmatically.
+bash
 
-API Usage Example (with Python):
+curl -H "Authorization: Bearer <your-token>" \
+     -X GET "https://<OpenShift-Cluster-URL>/apis/image.openshift.io/v1/namespaces/<namespace>/imagestreams"
+Delete Specific Image Stream: Identify the image stream name and delete it:
 
+bash
+
+curl -H "Authorization: Bearer <your-token>" \
+     -X DELETE "https://<OpenShift-Cluster-URL>/apis/image.openshift.io/v1/namespaces/<namespace>/imagestreams/<image-name>"
+Python REST API Example:
 python
-Copy
-Edit
+
 import requests
 
-api_url = "https://<OpenShift-Cluster-URL>/apis/image.openshift.io/v1/namespaces/openshift-infra/imagestreams"
-headers = {"Authorization": "Bearer <your-token>"}
+API_URL = "https://<OpenShift-Cluster-URL>/apis/image.openshift.io/v1/namespaces/your-namespace/imagestreams"
+TOKEN = "<your-token>"
+HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
-response = requests.get(api_url, headers=headers)
-if response.status_code == 200:
-    print("Fetched image streams:", response.json())
-Pros:
+def get_image_streams():
+    response = requests.get(API_URL, headers=HEADERS)
+    if response.status_code == 200:
+        return response.json()["items"]
+    else:
+        print(f"Failed to fetch image streams: {response.text}")
+        return []
 
-Fully customizable.
-Integrates well with external systems and monitoring tools.
-Cons:
+def delete_image_stream(image_name):
+    url = f"{API_URL}/{image_name}"
+    response = requests.delete(url, headers=HEADERS)
+    if response.status_code == 200:
+        print(f"Deleted image stream: {image_name}")
+    else:
+        print(f"Failed to delete image stream {image_name}: {response.text}")
 
-Requires API knowledge and setup.
-API rate limits and access controls may pose challenges.
-7. Tagging and Labeling for Resource Management
-Use labels and annotations to mark resources for cleanup.
+def main():
+    image_streams = get_image_streams()
+    for image in image_streams:
+        if image["metadata"]["name"] == "target-image-name":
+            delete_image_stream(image["metadata"]["name"])
 
-Example: Add a label cleanup-policy: prune to resources that can be removed.
-
-Pros:
-
-Adds granularity and control to automation.
-Avoids accidental deletion of critical resources.
-Cons:
-
-Requires consistent labeling practices.
-Initial setup effort.
-Pros and Cons of Automated Cleanup Methods
+if __name__ == "__main__":
+    main()
+Recommendations
+Use oc CLI for simple, manual deletions or scripted tasks in small environments.
+Use Shell scripting for automated tasks where CLI commands suffice and the environment is straightforward.
+Use Python scripts for more complex tasks requiring logic, filtering, or interaction with external systems.
+Use the OpenShift REST API for granular control and integration with custom automation platforms.
+Schedule these scripts using tools like Cron, Jenkins, or other orchestration tools for periodic execution.
+Pros and Cons for Namespace-Specific Cleanup
 Method	Pros	Cons
-Image Pruning	Built-in, efficient, customizable retention policies.	Requires elevated permissions. Risk of accidental deletion.
-Build and Deployment Pruning	Clears unused resources, reduces clutter.	May interfere with debugging older builds/deployments.
-CronJobs	Fully automated within OpenShift.	Relies on cluster scheduler. Limited control over execution environment.
-External Shell/Python Scripts	Flexible, integrates with external tools.	Requires external setup and secure cluster access.
-REST API Automation	Full control, integrates with custom workflows.	Requires API setup and knowledge. Higher complexity.
-Monitoring and Alerts	Proactive, prevents issues before they occur.	Reactive rather than cleanup-focused. Requires additional setup.
-Tagging/Labeling	Granular control, avoids accidental deletions.	Requires discipline in tagging resources consistently.
-Best Practices for Cleanup Automation
-Start with Retention Policies:
-
-Define how long resources like images, builds, and deployments should be retained.
-Use parameters like --keep-tag-revisions and --keep-younger-than.
-Test in a Non-Production Environment:
-
-Validate the pruning scripts and commands in a lower environment (e.g., Dev or Test).
-Use Role-Based Access Control (RBAC):
-
-Ensure scripts and automation tools use service accounts with only the necessary permissions.
-Monitor and Log Cleanup Jobs:
-
-Keep logs of all cleanup operations for auditing and troubleshooting.
-Use tools like ELK or Splunk for centralized log analysis.
-Secure Automation Scripts:
-
-Store tokens and credentials securely (e.g., in a secret manager).
-Rotate tokens regularly.
-By combining these approaches and best practices, you can maintain a clean and efficient OpenShift environment while minimizing risks.
+oc CLI	Easy to use, minimal setup, namespace-specific commands.	Requires manual intervention or additional scripting for automation.
+Shell Scripts	Simple automation, can run from external systems.	Limited logic for advanced filtering or custom operations.
+Python Scripts	Flexible, supports complex logic and integration.	Requires Python setup and libraries like requests for REST API usage.
+REST API	Granular control, integrates with custom workflows and monitoring tools.	Higher complexity, requires API authentication and knowledge.
+By combining these methods, you can effectively clean up specific images within namespaces based on your organization's policies and requirements.
