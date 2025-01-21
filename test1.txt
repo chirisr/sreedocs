@@ -1,43 +1,43 @@
-Dear [Splunk Team/Recipient's Name],
-
-I hope this email finds you well. I am reaching out regarding an issue we have observed with the events being ingested into Splunk, which appear to be incomplete in certain scenarios.
-
-Observations:
-At the application level, logs are being written correctly, and all start and end events are present in the raw application logs.
-When the same logs are piped into Splunk, some events appear to be missing. Specifically:
-Some events are missing the start message but have an end message.
-Some events have the start message but no corresponding end message.
-A significant number of events are complete (both start and end are present).
-These discrepancies have been verified by comparing the application-level logs and the data visible in Splunk.
-
-Example:
-For a given correlation ID (<example_correlation_id>):
-
-Application log shows both "request received" and "message published successfully".
-Splunk only displays "message published successfully".
-This behavior suggests that the issue may lie in the data pipeline between the application and Splunk.
-
-Questions for Investigation:
-Are there any known limitations or issues in the Splunk ingestion pipeline (e.g., heavy forwarders, indexers, or universal forwarders) that could result in the loss of events?
-Could this be caused by a configuration issue in the Splunk forwarder or ingestion pipeline, such as:
-Maximum event size (maxEventSize) restrictions?
-Line breaking or merging rules (LINE_BREAKER, SHOULD_LINEMERGE)?
-Is there a chance that network issues or buffering settings (e.g., queueSize) are causing logs to be dropped or overwritten during high traffic?
-Are there any rate-limiting or ingestion throttling policies that might result in partial data ingestion?
-Could there be an issue with how the logs are being parsed, resulting in certain events being dropped due to format mismatches?
-Supporting Details:
-Index/Sourcetype: <provide details>
-Environment: <e.g., Development, Test, UAT>
-Log Sample:
-plaintext
-Copy code
-[Timestamp] [Pod] request received for correlation_id=<ID>
-[Timestamp] [Pod] message published successfully for correlation_id=<ID>
-Steps Taken to Validate:
-Compared raw logs at the application level with ingested logs in Splunk.
-Verified that the issue is consistent across multiple correlation IDs.
-Observed that the application logs have no missing data.
-Request:
-Could you please help investigate this issue or provide guidance on the possible causes and remediation steps? We would appreciate any insights or checks we can perform to identify the root cause.
-
-Looking forward to your response.
+1. Shell Script for Automating Image Cleanup
+Overview:
+Uses shell commands to interact with OpenShift's oc CLI tool.
+Typically run manually or via cron jobs on an external machine (outside OpenShift).
+Pros:
+Simple to Implement: Easy to write and deploy, especially for those familiar with Bash scripting and oc CLI.
+External Execution: Can be run from any machine that has access to the OpenShift cluster, providing flexibility.
+Lightweight: No need for additional OpenShift resources (like Pods or CronJobs in the cluster).
+Cons:
+Manual Setup: Requires manual scheduling with cron or another scheduling tool on the external system.
+Limited Integration: No native OpenShift integration—requires external management and access.
+Error Handling: Basic error handling is possible but limited in scalability or robustness compared to higher-level scripting languages.
+Example Use Case:
+You have a script that runs on an external server at a scheduled time to prune images in OpenShift.
+2. Python Script for Automating Image Cleanup
+Overview:
+Uses Python's standard libraries and/or OpenShift-specific Python libraries (e.g., openshift or kubernetes Python client) to interact with OpenShift's REST API.
+Python can be used to execute the oc CLI commands or interact directly with OpenShift APIs for more fine-grained control.
+Pros:
+Highly Flexible: Python offers robust libraries for interacting with OpenShift and Kubernetes, allowing more complex logic (e.g., retries, error handling, configuration management).
+API Integration: Direct API calls offer greater flexibility, especially for more complex image filtering or processing tasks.
+Advanced Features: Easily integrate logging, retries, and error handling, making it easier to scale and manage.
+Cons:
+Requires Python Setup: Python runtime and dependencies must be installed on the machine running the script.
+Complexity: Writing and maintaining Python scripts can be more complex than a simple shell script, especially for those not familiar with Python or OpenShift APIs.
+External Execution: Like the Shell approach, it requires external execution (i.e., outside OpenShift), so it may not be as tightly integrated with the OpenShift cluster.
+Example Use Case:
+A Python script runs periodically and prunes images using the OpenShift REST API. It could also handle retries and integrate with a monitoring system to notify admins about failures.
+3. OpenShift CronJob for Automating Image Cleanup
+Overview:
+Native to OpenShift: CronJobs are a built-in Kubernetes resource that allows you to schedule periodic jobs inside the OpenShift cluster itself.
+Can run oc adm prune images or custom scripts as part of the CronJob's execution.
+Pros:
+Native Integration: Fully integrated with OpenShift, making it easy to manage and schedule jobs directly within the cluster.
+Cluster Resources: Runs inside the cluster, leveraging OpenShift's native scheduling, logging, and monitoring capabilities.
+No External Dependencies: Does not require external servers or machines to run; everything is self-contained within the OpenShift cluster.
+Resource Management: You can set resource limits (CPU, memory) for the CronJob to optimize resource usage.
+Cons:
+Cluster Load: CronJobs consume cluster resources, which may add overhead if running very frequently or with resource-intensive tasks.
+Debugging Complexity: Debugging CronJobs can be harder since logs are often more difficult to access directly from the UI and might require extra setup for central logging.
+Limited Flexibility: While CronJobs are great for recurring tasks, they are less flexible than scripts (Shell/Python) for highly complex or non-OpenShift-specific workflows.
+Example Use Case:
+A CronJob within the OpenShift cluster prunes images periodically, using the OpenShift oc CLI command inside a container that runs within the cluster.
