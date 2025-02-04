@@ -1,116 +1,271 @@
-Delete Vulnerable Images:
+Flowchart: Manual Certificate Creation & Deployment Using Venafi TPP as CA in OpenShift
 
-Check a CSV file with vulnerable image references.
-Identify the associated registry, OpenShift clusters, and DeploymentConfigs using these images.
-Remove the images from the registry and related objects in OpenShift, including DeploymentConfigs, Pods, and namespaces.
-Namespace Level:
+1️⃣ Access Venafi TPP
 
-Check within a specific namespace and remove any vulnerable image in the registry associated with a running pod.
-Cluster Level:
+User logs into Venafi Trust Protection Platform (TPP) Web Console.
 
-Execute the cleanup on a cluster-wide level for all namespaces with vulnerable images.
-Cross-Cluster Level:
+Navigate to "TLS Protect" → "Certificates".
 
-The design should be reusable and capable of performing cleanup across multiple OpenShift clusters.
-Process Flow:
+🔻 Next Step: Create Certificate Request
 
-Identify vulnerable images listed in the CSV file.
-Find all DeploymentConfigs using these images.
-Delete the vulnerable images from the registry.
-Delete or recreate DeploymentConfigs that depend on the vulnerable images.
-Ensure cleanup across multiple clusters, namespaces, and DeploymentConfigs.
-Steps for LLD:
-1. Input (CSV with vulnerable image list):
-The CSV file will contain information about the vulnerable images. Example columns:
+2️⃣ Create Certificate Request
 
-image_name
-version
-namespace
-2. Processing the Image Cleanup:
-Namespace-Level Cleanup: Loop through each namespace and check for pods, deployments, and configurations using the vulnerable image.
-Cluster-Level Cleanup: Check all namespaces within a given OpenShift cluster for deployments using vulnerable images.
-Cross-Cluster Cleanup: If your deployment spans multiple clusters, create a cross-cluster solution that queries the image usage and performs the cleanup on each cluster.
-3. Delete Vulnerable Images:
-Use Kubernetes and OpenShift APIs to list the resources (pods, deployments, and services) using the vulnerable image.
-Delete these resources (pods, deployments) that are running the vulnerable image.
-Delete or mark the vulnerable image in the registry as obsolete.
-Python Code (FastAPI-based solution)
-Here is a Python solution using FastAPI, Pandas for CSV handling, and the OpenShift and Kubernetes Python Client to interact with OpenShift clusters.
+Click "Request a Certificate".
 
-python
-Copy
-Edit
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
-from pydantic import BaseModel, SecretStr
-import pandas as pd
-import io
-import kubernetes
-from openshift.dynamic import DynamicClient
-import requests
-import os
+Fill in details:
 
-# FastAPI setup
-app = FastAPI()
+Common Name (CN)
 
-# Define a model for the authentication credentials
-class AuthCredentials(BaseModel):
-    api_token: SecretStr
-    cluster_url: str
+Subject Alternative Names (SANs)
 
-# Function to connect to OpenShift cluster using credentials
-def get_openshift_client(auth: AuthCredentials):
-    k8s_client = kubernetes.config.new_client_from_config()  # Assuming kubeconfig is set
-    openshift_client = DynamicClient(k8s_client)
-    return openshift_client
+Key Algorithm & Size
 
-# CSV parsing and cleanup logic
-def clean_vulnerable_images(csv_file: UploadFile):
-    content = csv_file.file.read()
-    df = pd.read_csv(io.BytesIO(content))
-    
-    # Assuming the CSV has 'image_name' and 'namespace' columns
-    for _, row in df.iterrows():
-        image_name = row['image_name']
-        namespace = row['namespace']
-        
-        # Query OpenShift/Kubernetes for deployments using this image
-        print(f"Cleaning {image_name} in namespace {namespace}")
-        
-        # Call functions to clean the images, deployments, and related resources here
-        # You can use OpenShift APIs to delete DeploymentConfig and other resources
-        
-        # Pseudo code: Cleanup vulnerable images in the specified namespace
-        # cleanup_deployment(namespace, image_name)
-        # delete_from_registry(image_name)
+Certificate Policy Compliance
 
-# Endpoint to handle CSV upload and process the cleanup
-@app.post("/cleanup_vulnerable_images/")
-async def cleanup_vulnerable_images(csv_file: UploadFile = File(...), auth: AuthCredentials = Depends()):
-    try:
-        openshift_client = get_openshift_client(auth)
-        clean_vulnerable_images(csv_file)
-        return {"message": "Vulnerable images cleanup initiated."}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error occurred: {str(e)}")
+Select Venafi as the CA.
 
-# Example helper functions for OpenShift cleanup
-def cleanup_deployment(namespace: str, image_name: str):
-    # Logic to find DeploymentConfigs and Pods using the vulnerable image
-    # For example, delete the DeploymentConfig in the namespace
-    pass
+Click Submit Request.
 
-def delete_from_registry(image_name: str):
-    # Logic to delete the vulnerable image from the registry
-    pass
+🔻 Next Step: Approval Process (If Required)
 
-# Command to run FastAPI
-# uvicorn myapp:app --reload
-How it works:
-FastAPI accepts a CSV file with a list of vulnerable images and authentication credentials.
-The script processes the CSV file, iterates over each row (image and namespace), and cleans up all resources in OpenShift using the vulnerable image.
-OpenShift clients (DynamicClient) interact with clusters to find resources using the vulnerable image and clean them up.
-Extending the Design for Multiple Clusters
-You can extend this by adding logic to interact with multiple OpenShift clusters, especially if your deployments span across different clusters. You'll need to iterate through a list of clusters, get the OpenShift client for each, and clean them up as needed.
-Usability for Other Teams:
-You can package this as an API, which any other team can use. The API accepts a CSV with vulnerable images and cluster details and can trigger the cleanup process.
-The reusable design ensures other teams can deploy this solution and run cleanup actions in their own clusters and namespaces.
+3️⃣ Approval Process (If Required)
+
+If approval is required:
+
+Admin/Security team reviews the request.
+
+Validate domain compliance, key size, and policy adherence.
+
+Click "Approve" to proceed.
+
+If no approval is required, move to next step.
+
+🔻 Next Step: Venafi Issues the Certificate
+
+4️⃣ Certificate Issuance by Venafi CA
+
+Venafi TPP processes and issues the certificate.
+
+The issued certificate is available for download.
+
+🔻 Next Step: Retrieve Certificate
+
+5️⃣ Retrieve Issued Certificate from Venafi TPP
+
+User downloads the certificate bundle:
+
+Public Certificate (.crt/.pem)
+
+Private Key (.key)
+
+Intermediate CA Certificate (.crt)
+
+🔻 Next Step: Deploy Certificate in OpenShift
+
+6️⃣ Deploy Certificate to OpenShift
+
+🔹 Create OpenShift Secret for the Certificate
+
+Copy the certificate files to OpenShift:
+
+oc create secret tls my-tls-secret \
+  --cert=example.com.crt \
+  --key=example.com.key \
+  -n my-namespace
+
+🔹 Configure OpenShift Route with TLS
+
+Modify OpenShift Route configuration:
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: my-app-route
+  namespace: my-namespace
+spec:
+  host: example.com
+  to:
+    kind: Service
+    name: my-app-service
+  tls:
+    termination: edge
+    certificate: |-
+      -----BEGIN CERTIFICATE-----
+      ... (certificate content) ...
+      -----END CERTIFICATE-----
+    key: |-
+      -----BEGIN PRIVATE KEY-----
+      ... (private key content) ...
+      -----END PRIVATE KEY-----
+    caCertificate: |-
+      -----BEGIN CERTIFICATE-----
+      ... (CA certificate content) ...
+      -----END CERTIFICATE-----
+
+Apply the updated Route:
+
+oc apply -f my-app-route.yaml
+
+🔻 Next Step: Restart & Verify
+
+7️⃣ Restart Services & Verify Deployment
+
+Restart OpenShift pods if necessary:
+
+oc rollout restart deployment my-app -n my-namespace
+
+Verify the HTTPS connection:
+
+curl -v https://example.com
+
+Check OpenShift logs for any errors.
+
+Final Step: Certificate Successfully Deployed in OpenShift!
+
+
+
+
+
+1️⃣ Certificate Request via Cert-Manager
+
+Cert-Manager creates a CertificateRequest object.
+
+The request includes details such as:
+
+Common Name (CN) & Subject Alternative Names (SANs)
+
+Key Algorithm & Size
+
+Issuer Reference (Venafi TPP Issuer)
+
+Validity Period
+
+🔻 Next Step: Cert-Manager Submits Request to Venafi
+
+2️⃣ Cert-Manager Submits Request to Venafi TPP
+
+Cert-Manager forwards the CertificateRequest to Venafi TPP.
+
+Venafi verifies:
+
+Request details compliance with security policies.
+
+If an approval workflow is required.
+
+🔻 Next Step: Approval Process (If Required)
+
+3️⃣ Approval Process in Venafi TPP (If Configured)
+
+If approval is required:
+
+Admin/Security Team reviews and approves/rejects the request.
+
+Once approved, Venafi forwards the request to the configured CA.
+
+🔻 Next Step: Venafi Sends Request to CA
+
+4️⃣ Venafi TPP Submits Request to Certificate Authority (CA)
+
+Venafi acts as a broker and sends the request to:
+
+Public CA (DigiCert, GlobalSign, etc.)
+
+Private CA (Microsoft CA, AWS PCA, HashiCorp Vault, etc.)
+
+The CA validates the request and issues the certificate.
+
+🔻 Next Step: Venafi Issues Certificate Back to Cert-Manager
+
+5️⃣ Cert-Manager Receives Issued Certificate from Venafi
+
+The issued certificate is stored as a Secret in Kubernetes.
+
+The secret contains:
+
+Public Certificate (.crt)
+
+Private Key (.key)
+
+CA Certificate (.crt)
+
+🔻 Next Step: Deploy Certificate to Workloads
+
+6️⃣ Deploy Certificate to Kubernetes Ingress and Applications
+
+🔹 Configure Kubernetes Ingress with TLS Secret
+
+Reference the certificate secret in an Ingress resource:
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app-ingress
+  namespace: my-namespace
+spec:
+  tls:
+  - hosts:
+    - example.com
+    secretName: my-tls-secret
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: my-app-service
+            port:
+              number: 443
+
+Apply the Ingress configuration:
+
+kubectl apply -f ingress.yaml
+
+🔹 Deploy Certificate to OpenShift Routes (If Using OpenShift)
+
+Create a Route with the certificate secret:
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: my-app-route
+  namespace: my-namespace
+spec:
+  host: example.com
+  to:
+    kind: Service
+    name: my-app-service
+  tls:
+    termination: edge
+    key: |-
+      -----BEGIN PRIVATE KEY-----
+      ...
+      -----END PRIVATE KEY-----
+    certificate: |-
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+    caCertificate: |-
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+
+Apply the Route configuration:
+
+oc apply -f route.yaml
+
+🔻 Next Step: Restart Services & Verify Deployment
+
+7️⃣ Restart Services & Verify HTTPS Connection
+
+Restart workloads if necessary:
+
+kubectl rollout restart deployment my-app -n my-namespace
+
+Verify HTTPS connectivity:
+
+curl -v https://example.com
+
+Check logs for potential certificate-related errors.
+
