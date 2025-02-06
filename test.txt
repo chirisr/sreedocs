@@ -1,189 +1,132 @@
-1. Shell Script Example
-This shell script will automate image cleanup in OpenShift, focusing on a specific image in a given namespace with a retention policy. The script uses the oc adm prune images command to prune images based on specific parameters, like keeping a certain number of tag revisions and keeping images younger than a specified age.
+When migrating from DeploymentConfig to Deployment in OpenShift, you need to modify multiple aspects of your configuration, including selectors, labels, strategies, and triggers. Below is a detailed breakdown of the necessary changes.
 
-Shell Script (cleanup-images.sh)
-bash
-Copy
-Edit
-#!/bin/bash
+1. API Version & Kind
+DeploymentConfig (Old)
 
-# Set parameters
-NAMESPACE="your-namespace"
-IMAGE_NAME="your-image-name"
-KEEP_TAG_REVISIONS=5
-KEEP_YOUNGER_THAN="15d"  # Keep images younger than 15 days
-
-# Login to OpenShift (you can use a service account or token here)
-oc login --token=<your-token> --server=<your-cluster-server>
-
-# Prune images
-echo "Pruning images for ${IMAGE_NAME} in namespace ${NAMESPACE} with retention policy:"
-echo "- Keeping ${KEEP_TAG_REVISIONS} tag revisions"
-echo "- Keeping images younger than ${KEEP_YOUNGER_THAN}"
-
-oc adm prune images --confirm \
-    --keep-tag-revisions=${KEEP_TAG_REVISIONS} \
-    --keep-younger-than=${KEEP_YOUNGER_THAN} \
-    --filter-by-name=${NAMESPACE}/${IMAGE_NAME}
-
-echo "Image cleanup complete."
-How to Run:
-Save this script as cleanup-images.sh.
-Ensure that you have OpenShift CLI (oc) installed and logged in.
-Execute the script manually or schedule it via a cron job on a machine that has access to the OpenShift cluster.
-How to Schedule with Cron:
-bash
-Copy
-Edit
-# Run this script daily at midnight
-0 0 * * * /path/to/cleanup-images.sh >> /var/log/cleanup-images.log 2>&1
-2. Python Script Example
-This Python script interacts with the OpenShift API or oc CLI to automate the cleanup process for a specific image with a retention policy. It uses the subprocess module to execute oc commands.
-
-Python Script (cleanup_images.py)
-python
-Copy
-Edit
-import subprocess
-import logging
-import os
-
-# Configurations
-NAMESPACE = "your-namespace"
-IMAGE_NAME = "your-image-name"
-KEEP_TAG_REVISIONS = 5
-KEEP_YOUNGER_THAN = "15d"  # Keep images younger than 15 days
-OC_CMD = "oc"
-TOKEN = "<your-token>"
-SERVER = "<your-cluster-server>"
-
-# Setup logging
-logging.basicConfig(filename='/var/log/cleanup-images.log', level=logging.INFO)
-
-# Function to run OpenShift CLI command
-def run_oc_command(command):
-    try:
-        result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        logging.info(f"Command executed successfully: {command}")
-        logging.info(f"Output: {result.stdout.decode()}")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Command failed: {command}")
-        logging.error(f"Error: {e.stderr.decode()}")
-        raise
-
-# Login to OpenShift
-def login_to_openshift():
-    login_cmd = f"{OC_CMD} login --token={TOKEN} --server={SERVER}"
-    run_oc_command(login_cmd)
-
-# Prune images
-def prune_images():
-    prune_cmd = f"{OC_CMD} adm prune images --confirm --keep-tag-revisions={KEEP_TAG_REVISIONS} " \
-                f"--keep-younger-than={KEEP_YOUNGER_THAN} --filter-by-name={NAMESPACE}/{IMAGE_NAME}"
-    run_oc_command(prune_cmd)
-
-# Main function
-def main():
-    logging.info("Starting image cleanup process...")
-    login_to_openshift()
-    prune_images()
-    logging.info("Image cleanup completed.")
-
-if __name__ == "__main__":
-    main()
-How to Run:
-Install Python and ensure you have the oc CLI installed.
-Save the Python script as cleanup_images.py.
-Execute it manually or schedule it via a cron job.
-How to Schedule with Cron:
-bash
-Copy
-Edit
-# Run this script daily at midnight
-0 0 * * * /usr/bin/python3 /path/to/cleanup_images.py
-3. OpenShift CronJob Example
-The OpenShift CronJob can run inside the OpenShift cluster to periodically prune images based on the retention policy.
-
-OpenShift CronJob YAML (prune-images-cronjob.yaml)
 yaml
 Copy
 Edit
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: prune-specific-image
-  namespace: your-namespace
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+Deployment (New)
+
+yaml
+Copy
+Edit
+apiVersion: apps/v1
+kind: Deployment
+Why? DeploymentConfig is an OpenShift-specific resource, while Deployment is a Kubernetes-native resource, using the apps/v1 API.
+2. Selectors & Labels
+DeploymentConfig (Old)
+
+yaml
+Copy
+Edit
 spec:
-  schedule: "0 0 * * *"  # Runs daily at midnight
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: prune-image
-            image: registry.redhat.io/openshift4/ose-cli:latest  # OpenShift CLI image
-            command:
-            - /bin/bash
-            - "-c"
-            - |
-              echo "Pruning images for ${IMAGE_NAME} in namespace ${NAMESPACE} with retention policy:"
-              echo "- Keeping ${KEEP_TAG_REVISIONS} tag revisions"
-              echo "- Keeping images younger than ${KEEP_YOUNGER_THAN}"
+  selector:
+    app: my-app
+Deployment (New)
 
-              oc login --token=${OPENSHIFT_TOKEN} --server=${OPENSHIFT_SERVER}
+yaml
+Copy
+Edit
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+Why? Deployment uses matchLabels for selecting pods, whereas DeploymentConfig uses a simple selector field.
+3. Strategy
+DeploymentConfig (Old)
 
-              oc adm prune images --confirm \
-                  --keep-tag-revisions=${KEEP_TAG_REVISIONS} \
-                  --keep-younger-than=${KEEP_YOUNGER_THAN} \
-                  --filter-by-name=${NAMESPACE}/${IMAGE_NAME}
+yaml
+Copy
+Edit
+spec:
+  strategy:
+    type: Rolling
+    rollingParams:
+      intervalSeconds: 1
+      maxSurge: 25%
+      maxUnavailable: 25%
+Deployment (New)
 
-              echo "Image cleanup complete."
-            env:
-            - name: OPENSHIFT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: openshift-token-secret
-                  key: token
-            - name: OPENSHIFT_SERVER
-              valueFrom:
-                secretKeyRef:
-                  name: openshift-server-secret
-                  key: server
-          restartPolicy: OnFailure
-          serviceAccountName: prune-sa  # ServiceAccount with prune permissions
-How to Deploy:
-Create a ServiceAccount (prune-sa) and bind it with necessary permissions (system:image-pruner).
-Apply the CronJob YAML file:
-bash
+yaml
 Copy
 Edit
-oc apply -f prune-images-cronjob.yaml
-Monitor the CronJob and its pods:
-bash
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+Why? In DeploymentConfig, rollingParams is used for rolling updates. In Deployment, it is directly defined inside rollingUpdate.
+4. Triggers
+DeploymentConfig (Old)
+
+yaml
 Copy
 Edit
-oc get cronjob prune-specific-image -n your-namespace
-How to Monitor:
-Check the job status using:
-bash
+spec:
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+          - my-container
+        from:
+          kind: ImageStreamTag
+          name: my-app:latest
+Deployment (New)
+
+ConfigChange trigger is automatic in Kubernetes Deployment.
+ImageChange triggers are not natively supported, but you can use an external automation mechanism (CI/CD, ArgoCD, or OpenShift Pipelines).
+If you want automatic image updates, you must handle it externally with kubectl set image or a GitOps pipeline.
+
+5. Template Structure (Same in Both)
+This part remains mostly unchanged, except for the required field modifications mentioned earlier.
+
+yaml
 Copy
 Edit
-oc get jobs -n your-namespace
-View logs:
-bash
+template:
+  metadata:
+    labels:
+      app: my-app
+  spec:
+    containers:
+      - name: my-container
+        image: my-image:latest
+        ports:
+          - containerPort: 8080
+6. Replicas & Update Strategy
+DeploymentConfig (Old)
+
+yaml
 Copy
 Edit
-oc logs job/prune-specific-image-<job-id> -n your-namespace
-Key Differences Between Approaches
-Aspect	Shell Script	Python Script	OpenShift CronJob
-Ease of Setup	Simple, requires minimal setup outside cluster	Requires Python setup and OpenShift CLI	Native OpenShift solution, requires YAML setup
-Integration with OpenShift	External, relies on CLI	External, can use OpenShift API or CLI	Fully integrated within OpenShift
-Flexibility	Moderate, can be customized with oc CLI	High, can integrate with APIs, use advanced logic	Limited by the capabilities of CronJob and the cluster
-Resource Management	External system resources (e.g., cron)	External system resources (e.g., cron)	Managed by OpenShift, uses cluster resources
-Scheduling	Needs external scheduling (cron)	Needs external scheduling (cron)	Scheduled natively by OpenShift CronJob
-Error Handling	Basic (exit codes, logs)	Advanced (retry logic, logging)	Limited to Pod/Job logs
-Conclusion
-Shell Script: Best for simple, quick image pruning on an external system.
-Python Script: Ideal for more complex workflows, logging, error handling, and API-based interactions.
-OpenShift CronJob: Best for fully native OpenShift automation, self-contained within the cluster with minimal manual intervention.
-Each solution is suitable for different scenarios depending on the level of complexity, integration requirements, and resource management preferences.
+spec:
+  replicas: 2
+Deployment (New)
+
+yaml
+Copy
+Edit
+spec:
+  replicas: 2
+  minReadySeconds: 5  # Ensures a pod runs for at least 5 seconds before being marked Ready
+  progressDeadlineSeconds: 600  # Deadline for deployment completion
+Why? Deployment provides minReadySeconds and progressDeadlineSeconds for finer control.
+7. Status Field (No Changes Required)
+Deployment and DeploymentConfig both use a similar status format, but Deployment uses conditions instead of OpenShift-specific fields.
+
+Key Takeaways
+Feature	DeploymentConfig (Old)	Deployment (New)
+API Version	apps.openshift.io/v1	apps/v1
+Kind	DeploymentConfig	Deployment
+Selector	selector:	matchLabels:
+Strategy	rollingParams	rollingUpdate
+Triggers	ImageChange and ConfigChange	Handled externally (e.g., CI/CD)
+Rolling Update	rollingParams	rollingUpdate
+Replica Set Control	DeploymentConfig manages replicas	Deployment uses ReplicaSets
+Image Handling	Uses ImageStreamTag	Needs external automation
