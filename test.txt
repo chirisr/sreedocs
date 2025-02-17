@@ -1,132 +1,79 @@
-When migrating from DeploymentConfig to Deployment in OpenShift, you need to modify multiple aspects of your configuration, including selectors, labels, strategies, and triggers. Below is a detailed breakdown of the necessary changes.
+Design Document: Vulnerable Image Cleanup Process
 
-1. API Version & Kind
-DeploymentConfig (Old)
+1. Overview
 
-yaml
-Copy
-Edit
-apiVersion: apps.openshift.io/v1
-kind: DeploymentConfig
-Deployment (New)
+This document outlines the process for identifying and removing vulnerable container images using both API-based and PowerShell-based scans. The process ensures thorough cleanup across multiple clusters, including stopping running pods, deleting DeploymentConfigs, and removing images from the registry.
 
-yaml
-Copy
-Edit
-apiVersion: apps/v1
-kind: Deployment
-Why? DeploymentConfig is an OpenShift-specific resource, while Deployment is a Kubernetes-native resource, using the apps/v1 API.
-2. Selectors & Labels
-DeploymentConfig (Old)
+2. Process Flow
 
-yaml
-Copy
-Edit
-spec:
-  selector:
-    app: my-app
-Deployment (New)
+2.1 API-Based Scan
 
-yaml
-Copy
-Edit
-spec:
-  selector:
-    matchLabels:
-      app: my-app
-Why? Deployment uses matchLabels for selecting pods, whereas DeploymentConfig uses a simple selector field.
-3. Strategy
-DeploymentConfig (Old)
+Start – The process begins.
 
-yaml
-Copy
-Edit
-spec:
-  strategy:
-    type: Rolling
-    rollingParams:
-      intervalSeconds: 1
-      maxSurge: 25%
-      maxUnavailable: 25%
-Deployment (New)
+Authenticate with Scan Portal – Authentication is performed with the security scan portal.
 
-yaml
-Copy
-Edit
-spec:
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 25%
-      maxUnavailable: 25%
-Why? In DeploymentConfig, rollingParams is used for rolling updates. In Deployment, it is directly defined inside rollingUpdate.
-4. Triggers
-DeploymentConfig (Old)
+Download CSV File – The user inputs a unique ID to retrieve a CSV report containing scan results.
 
-yaml
-Copy
-Edit
-spec:
-  triggers:
-    - type: ConfigChange
-    - type: ImageChange
-      imageChangeParams:
-        automatic: true
-        containerNames:
-          - my-container
-        from:
-          kind: ImageStreamTag
-          name: my-app:latest
-Deployment (New)
+Filter CSV for 'source=aqua' – The CSV file is filtered to extract records where the source is Aqua.
 
-ConfigChange trigger is automatic in Kubernetes Deployment.
-ImageChange triggers are not natively supported, but you can use an external automation mechanism (CI/CD, ArgoCD, or OpenShift Pipelines).
-If you want automatic image updates, you must handle it externally with kubectl set image or a GitOps pipeline.
+Extract Vulnerable Images – Vulnerable container images are identified from the filtered data.
 
-5. Template Structure (Same in Both)
-This part remains mostly unchanged, except for the required field modifications mentioned earlier.
+2.2 PowerShell-Based Scan
 
-yaml
-Copy
-Edit
-template:
-  metadata:
-    labels:
-      app: my-app
-  spec:
-    containers:
-      - name: my-container
-        image: my-image:latest
-        ports:
-          - containerPort: 8080
-6. Replicas & Update Strategy
-DeploymentConfig (Old)
+Run PowerShell Script – A script is executed to perform the vulnerability scan.
 
-yaml
-Copy
-Edit
-spec:
-  replicas: 2
-Deployment (New)
+Provide Scan Inputs – Necessary inputs for the scan are provided.
 
-yaml
-Copy
-Edit
-spec:
-  replicas: 2
-  minReadySeconds: 5  # Ensures a pod runs for at least 5 seconds before being marked Ready
-  progressDeadlineSeconds: 600  # Deadline for deployment completion
-Why? Deployment provides minReadySeconds and progressDeadlineSeconds for finer control.
-7. Status Field (No Changes Required)
-Deployment and DeploymentConfig both use a similar status format, but Deployment uses conditions instead of OpenShift-specific fields.
+Generate HTML Report – The scan results are compiled into an HTML report.
 
-Key Takeaways
-Feature	DeploymentConfig (Old)	Deployment (New)
-API Version	apps.openshift.io/v1	apps/v1
-Kind	DeploymentConfig	Deployment
-Selector	selector:	matchLabels:
-Strategy	rollingParams	rollingUpdate
-Triggers	ImageChange and ConfigChange	Handled externally (e.g., CI/CD)
-Rolling Update	rollingParams	rollingUpdate
-Replica Set Control	DeploymentConfig manages replicas	Deployment uses ReplicaSets
-Image Handling	Uses ImageStreamTag	Needs external automation
+Extract Vulnerable Images – Vulnerable container images are identified from the generated report.
+
+2.3 Cleanup Process
+
+Identify Affected Deployments – Deployments using the identified vulnerable images are determined.
+
+Stop Running Pods – Running pods that use the vulnerable images are terminated.
+
+Delete DeploymentConfigs – Associated DeploymentConfigs are removed to prevent further usage.
+
+Remove Vulnerable Images from Registry – The vulnerable images are deleted from the image registry.
+
+Cross-Cluster Cleanup? – If multiple clusters are involved, the process is repeated for each cluster.
+
+Log and Audit Cleanup – All actions are logged for auditing and compliance purposes.
+
+End – The process concludes.
+
+3. Implementation Considerations
+
+Authentication: Secure API authentication for retrieving scan results.
+
+Automation: The process should be automated where possible to reduce manual intervention.
+
+Cross-Cluster Execution: Ensure seamless execution across multiple OpenShift clusters.
+
+Logging & Auditing: Maintain logs for tracking and compliance.
+
+Error Handling: Implement robust error handling for failures in authentication, file processing, and API requests.
+
+4. Conclusion
+
+This design ensures a structured and automated approach to identifying and removing vulnerable images from OpenShift environments, making the cleanup process efficient and repeatable.
+
+    A[Start] -->|API-Based Scan| B[Authenticate with Scan Portal]
+    B --> C[Download CSV File (Input Unique ID)]
+    C --> D[Filter CSV for 'source=aqua']
+    D --> E[Extract Vulnerable Images]
+    
+    A -->|PowerShell Scan| F[Run PowerShell Script]
+    F --> G[Provide Scan Inputs]
+    G --> H[Generate HTML Report]
+    H --> I[Extract Vulnerable Images]
+    
+    E & I --> J[Identify Affected Deployments]
+    J --> K[Stop Running Pods]
+    K --> L[Delete DeploymentConfigs]
+    L --> M[Remove Vulnerable Images from Registry]
+    M -->|Cross-Cluster Cleanup?| N[Repeat Process for Each Cluster]
+    N --> O[Log and Audit Cleanup]
+    O --> P[End]
