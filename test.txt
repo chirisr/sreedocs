@@ -1,79 +1,101 @@
-Design Document: Vulnerable Image Cleanup Process
+1. Introduction
 
-1. Overview
+This document outlines the steps to integrate FastAPI with the ScanPortal API to scan images and remove them if found vulnerable. The process involves gathering API details, obtaining necessary access permissions, developing Python code for integration, and performing cleanup operations in OpenShift.
 
-This document outlines the process for identifying and removing vulnerable container images using both API-based and PowerShell-based scans. The process ensures thorough cleanup across multiple clusters, including stopping running pods, deleting DeploymentConfigs, and removing images from the registry.
+2. Steps for Integration
 
-2. Process Flow
+Step 1: Gather API Details from ScanPortal Team
 
-2.1 API-Based Scan
+Contact the ScanPortal team to obtain the necessary API details, including:
 
-Start – The process begins.
+API base URL
 
-Authenticate with Scan Portal – Authentication is performed with the security scan portal.
+Authentication method (API key, OAuth, etc.)
 
-Download CSV File – The user inputs a unique ID to retrieve a CSV report containing scan results.
+Required request headers and parameters
 
-Filter CSV for 'source=aqua' – The CSV file is filtered to extract records where the source is Aqua.
+Response format and expected status codes
 
-Extract Vulnerable Images – Vulnerable container images are identified from the filtered data.
+Any rate limits or restrictions
 
-2.2 PowerShell-Based Scan
+Step 2: Request Access for Service Account
 
-Run PowerShell Script – A script is executed to perform the vulnerability scan.
+Create a Jira ticket requesting access for a service account to connect with ScanPortal.
 
-Provide Scan Inputs – Necessary inputs for the scan are provided.
+Include the following details in the ticket:
 
-Generate HTML Report – The scan results are compiled into an HTML report.
+Purpose of access (image vulnerability scanning and cleanup)
 
-Extract Vulnerable Images – Vulnerable container images are identified from the generated report.
+Required API permissions
 
-2.3 Cleanup Process
+Associated OpenShift cluster details
 
-Identify Affected Deployments – Deployments using the identified vulnerable images are determined.
+Contact person for troubleshooting
 
-Stop Running Pods – Running pods that use the vulnerable images are terminated.
+Wait for approval and confirm access with the ScanPortal team.
 
-Delete DeploymentConfigs – Associated DeploymentConfigs are removed to prevent further usage.
+Step 3: Develop Python Code for Integration
 
-Remove Vulnerable Images from Registry – The vulnerable images are deleted from the image registry.
+Implement a FastAPI-based solution to:
 
-Cross-Cluster Cleanup? – If multiple clusters are involved, the process is repeated for each cluster.
+Connect to the ScanPortal API and scan images.
 
-Log and Audit Cleanup – All actions are logged for auditing and compliance purposes.
+Parse the API response to check for vulnerabilities.
 
-End – The process concludes.
+If vulnerable, connect to the OpenShift cluster and:
 
-3. Implementation Considerations
+Stop running pods using the vulnerable image.
 
-Authentication: Secure API authentication for retrieving scan results.
+Delete the DeploymentConfig referencing the image.
 
-Automation: The process should be automated where possible to reduce manual intervention.
+Remove the vulnerable image from the registry.
 
-Cross-Cluster Execution: Ensure seamless execution across multiple OpenShift clusters.
+Required Python Libraries
 
-Logging & Auditing: Maintain logs for tracking and compliance.
+requests
 
-Error Handling: Implement robust error handling for failures in authentication, file processing, and API requests.
+json
 
-4. Conclusion
+pandas
 
-This design ensures a structured and automated approach to identifying and removing vulnerable images from OpenShift environments, making the cleanup process efficient and repeatable.
+io
 
-    A[Start] -->|API-Based Scan| B[Authenticate with Scan Portal]
-    B --> C[Download CSV File (Input Unique ID)]
-    C --> D[Filter CSV for 'source=aqua']
-    D --> E[Extract Vulnerable Images]
-    
-    A -->|PowerShell Scan| F[Run PowerShell Script]
-    F --> G[Provide Scan Inputs]
-    G --> H[Generate HTML Report]
-    H --> I[Extract Vulnerable Images]
-    
-    E & I --> J[Identify Affected Deployments]
-    J --> K[Stop Running Pods]
-    K --> L[Delete DeploymentConfigs]
-    L --> M[Remove Vulnerable Images from Registry]
-    M -->|Cross-Cluster Cleanup?| N[Repeat Process for Each Cluster]
-    N --> O[Log and Audit Cleanup]
-    O --> P[End]
+urllib3.exceptions
+
+kubernetes
+
+openshift
+
+FastAPI
+
+Depends
+
+HTTPException
+
+UploadFile, File
+
+typing.List
+
+Pydantic.BaseModel, SecretStr
+
+Step 4: Testing and Validation
+
+Deploy the FastAPI service in a test OpenShift environment.
+
+Test image scanning using ScanPortal API.
+
+Validate the proper execution of OpenShift cleanup actions.
+
+Log and handle any errors encountered.
+
+Step 5: Documentation and Deployment
+
+Document API endpoints, request and response formats.
+
+Provide a guide on how to deploy and use the FastAPI service.
+
+Ensure proper logging and monitoring mechanisms are in place.
+
+3. Conclusion
+
+Following these steps ensures a secure and automated approach to scanning and cleaning up vulnerable container images in OpenShift. The integration with ScanPortal API helps maintain compliance and security within the containerized environment.
