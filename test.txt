@@ -1,101 +1,229 @@
-1. Introduction
+from fastapi import FastAPI, Form, Depends, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+import requests
+from kubernetes import client, config
 
-This document outlines the steps to integrate FastAPI with the ScanPortal API to scan images and remove them if found vulnerable. The process involves gathering API details, obtaining necessary access permissions, developing Python code for integration, and performing cleanup operations in OpenShift.
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
-2. Steps for Integration
+# Predefined list of OpenShift clusters
+CLUSTERS = ["cluster1", "cluster2", "cluster3"]  # Update with actual cluster names
 
-Step 1: Gather API Details from ScanPortal Team
+# OpenShift API (Update with actual cluster API endpoint)
+OPENSHIFT_API_BASE = "https://openshift-api.example.com"
 
-Contact the ScanPortal team to obtain the necessary API details, including:
+# ScanPortal API Endpoints (Replace with actual URLs)
+SCANPORTAL_API_BASE = "https://scanportal.example.com/api"
+POST_SCAN_URL = f"{SCANPORTAL_API_BASE}/post_scan"
+GET_RESULTS_URL = f"{SCANPORTAL_API_BASE}/get_scan_results"
 
-API base URL
+@app.get("/", response_class=HTMLResponse)
+async def serve_ui(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request, "clusters": CLUSTERS})
 
-Authentication method (API key, OAuth, etc.)
+@app.post("/scan")
+async def scan_image(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    cluster: str = Form(...),
+    registry: str = Form(...),
+    image_name: str = Form(...),
+    tag: str = Form(None),
+):
+    # Step 1: Authenticate with OpenShift and get a token
+    token = get_openshift_token(username, password, cluster)
+    if not token:
+        return {"error": "Authentication failed. Invalid credentials or cluster."}
 
-Required request headers and parameters
+    # Step 2: Determine image(s) to scan
+    images_to_scan = [f"{registry}/{image_name}:{tag}"] if tag else get_all_image_tags(registry, image_name)
 
-Response format and expected status codes
+    vulnerable_images = []
+    
+    # Step 3: Scan images using ScanPortal
+    for image in images_to_scan:
+        scan_id = start_scan(image, token)
+        if not scan_id:
+            continue
 
-Any rate limits or restrictions
+        scan_result = get_scan_result(scan_id, token)
+        if scan_result:
+            vulnerable_images.append({"image": image, "vulnerabilities": scan_result})
 
-Step 2: Request Access for Service Account
+    # Step 4: Get OpenShift details for vulnerable images
+    pods, deployments = get_openshift_usage(cluster, token, [img["image"] for img in vulnerable_images])
 
-Create a Jira ticket requesting access for a service account to connect with ScanPortal.
+    return templates.TemplateResponse(
+        "results.html",
+        {
+            "request": request,
+            "vulnerable_images": vulnerable_images,
+            "pods": pods,
+            "deployments": deployments,
+        },
+    )
 
-Include the following details in the ticket:
+def get_openshift_token(username, password, cluster):
+    """Authenticate with OpenShift and retrieve a token."""
+    auth_url = f"{OPENSHIFT_API_BASE}/oauth/token"
+    payload = {
+        "grant_type": "password",
+        "client_id": "openshift-challenging-client",
+        "username": username,
+        "password": password,
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    
+    response = requests.post(auth_url, data=payload, headers=headers, verify=False)
+    if response.status_code == 200:
+        return response.json().get("access_token")
+    return None
 
-Purpose of access (image vulnerability scanning and cleanup)
+def get_all_image_tags(registry, image_name):
+    """Retrieve all available image tags from the registry"""
+    # Placeholder: Replace with actual API call to list tags
+    return [f"{registry}/{image_name}:latest", f"{registry}/{image_name}:v1", f"{registry}/{image_name}:v2"]
 
-Required API permissions
+def start_scan(image, token):
+    """Send a request to ScanPortal to start the scan."""
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.post(POST_SCAN_URL, json={"image": image}, headers=headers)
+    return response.json().get("scan_id") if response.status_code == 200 else None
 
-Associated OpenShift cluster details
+def get_scan_result(scan_id, token):
+    """Retrieve scan results from ScanPortal."""
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(f"{GET_RESULTS_URL}/{scan_id}", headers=headers)
+    
+    if response.status_code == 200:
+        scan_data = response.json()
+        vulnerabilities = [
+            {"file": item["file"], "solution": item["solution"]}
+            for item in scan_data.get("svsc", []) if item["solution"]
+        ]
+        return vulnerabilities if vulnerabilities else None
+    return None
 
-Contact person for troubleshooting
+def get_openshift_usage(cluster, token, images):
+    """Connect to OpenShift and retrieve pods and deployments using the specified images."""
+    config.load_kube_config()  # Adjust for remote access if needed
+    v1 = client.CoreV1Api()
+    apps_v1 = client.AppsV1Api()
 
-Wait for approval and confirm access with the ScanPortal team.
+    pods = []
+    deployments = []
 
-Step 3: Develop Python Code for Integration
+    for image in images:
+        pod_list = v1.list_pod_for_all_namespaces(watch=False)
+        for pod in pod_list.items:
+            if image in str(pod.spec.containers):
+                pods.append({"name": pod.metadata.name, "namespace": pod.metadata.namespace, "image": image})
 
-Implement a FastAPI-based solution to:
+        dep_list = apps_v1.list_deployment_for_all_namespaces(watch=False)
+        for dep in dep_list.items:
+            for container in dep.spec.template.spec.containers:
+                if image in container.image:
+                    deployments.append({"name": dep.metadata.name, "namespace": dep.metadata.namespace, "image": image})
 
-Connect to the ScanPortal API and scan images.
+    return pods, deployments
 
-Parse the API response to check for vulnerabilities.
 
-If vulnerable, connect to the OpenShift cluster and:
 
-Stop running pods using the vulnerable image.
 
-Delete the DeploymentConfig referencing the image.
 
-Remove the vulnerable image from the registry.
 
-Required Python Libraries
 
-requests
 
-json
 
-pandas
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Scan Portal</title>
+</head>
+<body>
+    <h2>Scan Image for Vulnerabilities</h2>
+    <form action="/scan" method="post">
+        <label>Username:</label>
+        <input type="text" name="username" required><br>
 
-io
+        <label>Password:</label>
+        <input type="password" name="password" required><br>
 
-urllib3.exceptions
+        <label>OpenShift Cluster:</label>
+        <select name="cluster">
+            {% for cluster in clusters %}
+                <option value="{{ cluster }}">{{ cluster }}</option>
+            {% endfor %}
+        </select><br>
 
-kubernetes
+        <label>Registry Name:</label>
+        <input type="text" name="registry" required><br>
 
-openshift
+        <label>Image Name:</label>
+        <input type="text" name="image_name" required><br>
 
-FastAPI
+        <label>Tag (optional):</label>
+        <input type="text" name="tag"><br>
 
-Depends
+        <button type="submit">Scan</button>
+    </form>
+</body>
+</html>
 
-HTTPException
 
-UploadFile, File
 
-typing.List
 
-Pydantic.BaseModel, SecretStr
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scan Results</title>
+</head>
+<body>
+    <h2>Scan Results</h2>
 
-Step 4: Testing and Validation
+    {% if vulnerable_images %}
+        <h3>Vulnerable Images</h3>
+        <table border="1">
+            <tr>
+                <th>Image</th>
+                <th>File</th>
+                <th>Solution</th>
+            </tr>
+            {% for img in vulnerable_images %}
+                {% for vuln in img.vulnerabilities %}
+                    <tr>
+                        <td>{{ img.image }}</td>
+                        <td>{{ vuln.file }}</td>
+                        <td>{{ vuln.solution }}</td>
+                    </tr>
+                {% endfor %}
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No vulnerabilities found.</p>
+    {% endif %}
 
-Deploy the FastAPI service in a test OpenShift environment.
+    <h3>Affected OpenShift Pods</h3>
+    <ul>
+        {% for pod in pods %}
+            <li>{{ pod.name }} (Namespace: {{ pod.namespace }}, Image: {{ pod.image }})</li>
+        {% endfor %}
+    </ul>
 
-Test image scanning using ScanPortal API.
+    <h3>Affected Deployments</h3>
+    <ul>
+        {% for dep in deployments %}
+            <li>{{ dep.name }} (Namespace: {{ dep.namespace }}, Image: {{ dep.image }})</li>
+        {% endfor %}
+    </ul>
 
-Validate the proper execution of OpenShift cleanup actions.
+    <a href="/">Go Back</a>
+</body>
+</html>
 
-Log and handle any errors encountered.
-
-Step 5: Documentation and Deployment
-
-Document API endpoints, request and response formats.
-
-Provide a guide on how to deploy and use the FastAPI service.
-
-Ensure proper logging and monitoring mechanisms are in place.
-
-3. Conclusion
-
-Following these steps ensures a secure and automated approach to scanning and cleaning up vulnerable container images in OpenShift. The integration with ScanPortal API helps maintain compliance and security within the containerized environment.
