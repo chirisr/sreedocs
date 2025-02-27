@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, Depends, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 import requests
@@ -7,11 +7,12 @@ from kubernetes import client, config
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-# Predefined list of OpenShift clusters
-CLUSTERS = ["cluster1", "cluster2", "cluster3"]  # Update with actual cluster names
-
-# OpenShift API (Update with actual cluster API endpoint)
-OPENSHIFT_API_BASE = "https://openshift-api.example.com"
+# Cluster-to-API mapping
+CLUSTER_API_MAP = {
+    "cluster1": "https://api.cluster1.openshift.example.com",
+    "cluster2": "https://api.cluster2.openshift.example.com",
+    "cluster3": "https://api.cluster3.openshift.example.com",
+}
 
 # ScanPortal API Endpoints (Replace with actual URLs)
 SCANPORTAL_API_BASE = "https://scanportal.example.com/api"
@@ -20,7 +21,7 @@ GET_RESULTS_URL = f"{SCANPORTAL_API_BASE}/get_scan_results"
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "clusters": CLUSTERS})
+    return templates.TemplateResponse("index.html", {"request": request, "clusters": CLUSTER_API_MAP.keys()})
 
 @app.post("/scan")
 async def scan_image(
@@ -32,17 +33,18 @@ async def scan_image(
     image_name: str = Form(...),
     tag: str = Form(None),
 ):
-    # Step 1: Authenticate with OpenShift and get a token
-    token = get_openshift_token(username, password, cluster)
-    if not token:
-        return {"error": "Authentication failed. Invalid credentials or cluster."}
+    openshift_api_base = CLUSTER_API_MAP.get(cluster)
+    if not openshift_api_base:
+        return {"error": "Invalid cluster selection."}
 
-    # Step 2: Determine image(s) to scan
+    token = get_openshift_token(username, password, openshift_api_base)
+    if not token:
+        return {"error": "Authentication failed."}
+
     images_to_scan = [f"{registry}/{image_name}:{tag}"] if tag else get_all_image_tags(registry, image_name)
 
     vulnerable_images = []
     
-    # Step 3: Scan images using ScanPortal
     for image in images_to_scan:
         scan_id = start_scan(image, token)
         if not scan_id:
@@ -52,8 +54,7 @@ async def scan_image(
         if scan_result:
             vulnerable_images.append({"image": image, "vulnerabilities": scan_result})
 
-    # Step 4: Get OpenShift details for vulnerable images
-    pods, deployments = get_openshift_usage(cluster, token, [img["image"] for img in vulnerable_images])
+    pods, deployment_configs = get_openshift_usage(cluster, token, [img["image"] for img in vulnerable_images])
 
     return templates.TemplateResponse(
         "results.html",
@@ -61,13 +62,13 @@ async def scan_image(
             "request": request,
             "vulnerable_images": vulnerable_images,
             "pods": pods,
-            "deployments": deployments,
+            "deployment_configs": deployment_configs,
         },
     )
 
-def get_openshift_token(username, password, cluster):
+def get_openshift_token(username, password, openshift_api_base):
     """Authenticate with OpenShift and retrieve a token."""
-    auth_url = f"{OPENSHIFT_API_BASE}/oauth/token"
+    auth_url = f"{openshift_api_base}/oauth/token"
     payload = {
         "grant_type": "password",
         "client_id": "openshift-challenging-client",
@@ -83,7 +84,6 @@ def get_openshift_token(username, password, cluster):
 
 def get_all_image_tags(registry, image_name):
     """Retrieve all available image tags from the registry"""
-    # Placeholder: Replace with actual API call to list tags
     return [f"{registry}/{image_name}:latest", f"{registry}/{image_name}:v1", f"{registry}/{image_name}:v2"]
 
 def start_scan(image, token):
@@ -107,13 +107,13 @@ def get_scan_result(scan_id, token):
     return None
 
 def get_openshift_usage(cluster, token, images):
-    """Connect to OpenShift and retrieve pods and deployments using the specified images."""
+    """Connect to OpenShift and retrieve pods and deploymentconfigs using the specified images."""
     config.load_kube_config()  # Adjust for remote access if needed
     v1 = client.CoreV1Api()
-    apps_v1 = client.AppsV1Api()
+    ocp_apps_v1 = client.AppsV1Api()
 
     pods = []
-    deployments = []
+    deployment_configs = []
 
     for image in images:
         pod_list = v1.list_pod_for_all_namespaces(watch=False)
@@ -121,13 +121,13 @@ def get_openshift_usage(cluster, token, images):
             if image in str(pod.spec.containers):
                 pods.append({"name": pod.metadata.name, "namespace": pod.metadata.namespace, "image": image})
 
-        dep_list = apps_v1.list_deployment_for_all_namespaces(watch=False)
+        dep_list = ocp_apps_v1.list_deployment_config_for_all_namespaces(watch=False)
         for dep in dep_list.items:
             for container in dep.spec.template.spec.containers:
                 if image in container.image:
-                    deployments.append({"name": dep.metadata.name, "namespace": dep.metadata.namespace, "image": image})
+                    deployment_configs.append({"name": dep.metadata.name, "namespace": dep.metadata.namespace, "image": image})
 
-    return pods, deployments
+    return pods, deployment_configs
 
 
 
