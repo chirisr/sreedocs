@@ -5,8 +5,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.requests import Request
 import requests
 import json
-import pandas as pd
 import urllib3
+import logging
 from kubernetes import client, config
 from openshift.dynamic import DynamicClient
 from ocploginconfiguration import ocploginconfiguration
@@ -15,13 +15,18 @@ from typing import Optional
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 app = FastAPI()
 
 # Set up Jinja2 for templates
 templates = Jinja2Templates(directory="templates")
+
+# Mount static folder for CSS and other assets
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Sample OpenShift Clusters (Modify as needed)
+# Sample OpenShift Clusters
 CLUSTERS = {
     "Cluster1": "https://api.cluster1.example.com",
     "Cluster2": "https://api.cluster2.example.com"
@@ -29,72 +34,59 @@ CLUSTERS = {
 
 SCANPORTAL_API_BASE = "https://scanportal.example.com"
 
+@app.get("/", response_class=HTMLResponse)
+async def render_index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request, "clusters": CLUSTERS})
+
 def get_openshift_token(username, password):
     """Retrieve OpenShift token using ocploginconfiguration."""
     try:
-        token = ocploginconfiguration(ocp_username=username, ocp_password=password)
-        return token if token else None
+        logging.info("Retrieving OpenShift token...")
+        return ocploginconfiguration(ocp_username=username, ocp_password=password)
     except Exception as e:
-        print(f"Error retrieving OpenShift token: {e}")
+        logging.error(f"Error retrieving OpenShift token: {e}")
         return None
 
 def get_image_tags(registry, image_name, username, password):
     """Retrieve available tags for an image from the registry."""
     try:
-        auth = (username, password)
         url = f"https://{registry}/v2/{image_name}/tags/list"
-        response = requests.get(url, auth=auth, verify=False)
-
-        if response.status_code == 200:
-            return response.json().get("tags", [])
-        else:
-            return []
+        response = requests.get(url, auth=(username, password), verify=False)
+        return response.json().get("tags", []) if response.status_code == 200 else []
     except Exception as e:
-        print(f"Error retrieving tags: {e}")
+        logging.error(f"Error retrieving tags: {e}")
         return []
 
 def start_scan(registry, image_name, tag, token):
     """Send scan request to ScanPortal."""
-    image_reference = f"{image_name}:{tag}"
-    scan_url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_reference}/scan"
+    url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_name}:{tag}/scan"
     headers = {"Authorization": f"Bearer {token}"}
-    response = requests.post(scan_url, headers=headers, verify=False)
-    return response.json().get("scan_id") if response.status_code == 200 else None
+    try:
+        response = requests.post(url, headers=headers, verify=False)
+        return response.json().get("scan_id") if response.status_code == 200 else None
+    except Exception as e:
+        logging.error(f"Error starting scan: {e}")
+        return None
 
 def get_scan_result(registry, image_name, tag, token):
     """Retrieve scan results from ScanPortal."""
-    image_reference = f"{image_name}:{tag}"
-    results_url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_reference}/scan"
+    url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_name}:{tag}/scan"
     headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(results_url, headers=headers, verify=False)
 
-    if response.status_code == 200:
-        scan_data = response.json()
-        vulnerabilities = [{"file": item["file"], "solution": item["solution"]}
-                           for item in scan_data.get("svsc", []) if item["solution"]]
-        return vulnerabilities if vulnerabilities else None
-    return None
-
-def get_pods_and_deployments(cluster, image):
-    """Retrieve pods and deployments using the scanned image."""
     try:
-        config.load_kube_config()
-        k8s_client = client.ApiClient()
-        dyn_client = DynamicClient(k8s_client)
+        response = requests.get(url, headers=headers, verify=False)
+        if response.status_code != 200:
+            return None
 
-        v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
-        pods = v1_pods.get(namespace="default").items
-
-        matched_pods = [pod.metadata.name for pod in pods if image in str(pod)]
-
-        return matched_pods
+        scan_data = response.json()
+        vulnerabilities = [
+            {"file": item["file"], "solution": item["solution"]}
+            for item in scan_data.get("svsc", []) if item.get("solution", "").strip()
+        ]
+        return vulnerabilities if vulnerabilities else None
     except Exception as e:
-        print(f"Error retrieving pods: {e}")
-        return []
-
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "clusters": CLUSTERS.keys()})
+        logging.error(f"Error retrieving scan results: {e}")
+        return None
 
 @app.post("/scan")
 async def scan_image(
@@ -103,149 +95,121 @@ async def scan_image(
     password: str = Form(...),
     cluster: str = Form(...),
     registry: str = Form(...),
-    image_name: str = Form(...)
+    image_name: str = Form(...),
+    tag: Optional[str] = Form(None)
 ):
-    # Get OpenShift token
     openshift_token = get_openshift_token(username, password)
     if not openshift_token:
         raise HTTPException(status_code=401, detail="Failed to retrieve OpenShift token")
 
-    # Fetch available tags
-    tags = get_image_tags(registry, image_name, username, password)
+    tags = [tag] if tag else get_image_tags(registry, image_name, username, password)
     if not tags:
         raise HTTPException(status_code=400, detail="No image tags found")
 
-    # Scan all tags
     scan_results = []
     for tag in tags:
         scan_id = start_scan(registry, image_name, tag, openshift_token)
-        if scan_id:
-            vulnerabilities = get_scan_result(registry, image_name, tag, openshift_token)
-            if vulnerabilities:
-                scan_results.append({"image": f"{registry}/{image_name}:{tag}", "vulnerabilities": vulnerabilities})
+        vulnerabilities = get_scan_result(registry, image_name, tag, openshift_token)
+        status = "Vulnerable" if vulnerabilities else "Not Vulnerable"
+        scan_results.append({"image": f"{registry}/{image_name}:{tag}", "status": status, "vulnerabilities": vulnerabilities})
 
-    # Find pods and deployments using the image
-    pods = get_pods_and_deployments(cluster, f"{registry}/{image_name}")
-
-    return templates.TemplateResponse("index.html", {"request": request, "scan_results": scan_results, "pods": pods})
+    return templates.TemplateResponse("results.html", {
+        "request": request,
+        "scan_results": scan_results
+    })
 
 
 
 <!DOCTYPE html>
 <html>
 <head>
-    <title>OpenShift Image Scanner</title>
+    <title>Image Scan Portal</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <h2>OpenShift Image Scanner</h2>
+    <h1>Scan an Image</h1>
     <form action="/scan" method="post">
-        <label>Username:</label>
-        <input type="text" name="username" required><br>
-
-        <label>Password:</label>
-        <input type="password" name="password" required><br>
-
-        <label>Select Cluster:</label>
+        Username: <input type="text" name="username" required><br>
+        Password: <input type="password" name="password" required><br>
+        Cluster: 
         <select name="cluster">
-            {% for cluster in clusters %}
-            <option value="{{ cluster }}">{{ cluster }}</option>
+            {% for cluster, url in clusters.items() %}
+                <option value="{{ url }}">{{ cluster }}</option>
             {% endfor %}
         </select><br>
-
-        <label>Registry:</label>
-        <input type="text" name="registry" placeholder="e.g., docker.io"><br>
-
-        <label>Image Name:</label>
-        <input type="text" name="image_name" required><br>
-
-        <button type="submit">Scan Image</button>
+        Registry: <input type="text" name="registry" required><br>
+        Image Name: <input type="text" name="image_name" required><br>
+        Image Tag (optional): <input type="text" name="tag"><br>
+        <button type="submit">Scan</button>
     </form>
-
-    {% if scan_results %}
-    <h3>Scan Results:</h3>
-    <ul>
-        {% for result in scan_results %}
-        <li><b>{{ result.image }}</b> - Vulnerable Files:
-            <ul>
-                {% for vuln in result.vulnerabilities %}
-                <li>{{ vuln.file }} - {{ vuln.solution }}</li>
-                {% endfor %}
-            </ul>
-        </li>
-        {% endfor %}
-    </ul>
-    {% endif %}
-
-    {% if pods %}
-    <h3>Pods Using Vulnerable Images:</h3>
-    <ul>
-        {% for pod in pods %}
-        <li>{{ pod }}</li>
-        {% endfor %}
-    </ul>
-    {% endif %}
 </body>
 </html>
 
 
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Scan Results</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <h1>Scan Results</h1>
+    <ul>
+        {% for result in scan_results %}
+            <li>{{ result.image }} - {{ result.status }}</li>
+            {% if result.status == "Vulnerable" %}
+                <ul>
+                    {% for vuln in result.vulnerabilities %}
+                        <li>{{ vuln.file }} - {{ vuln.solution }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        {% endfor %}
+    </ul>
+</body>
+</html>
+
+
+
+
+
 body {
     font-family: Arial, sans-serif;
-    background-color: #f4f4f4;
-    margin: 0;
+    margin: 40px;
     padding: 20px;
+    background-color: #f4f4f4;
 }
 
-h2, h3 {
-    text-align: center;
+h1 {
+    color: #333;
 }
 
 form {
     background: white;
     padding: 20px;
-    width: 400px;
-    margin: auto;
-    border-radius: 8px;
-    box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+    border-radius: 5px;
+    box-shadow: 0px 0px 10px #aaa;
+    max-width: 400px;
 }
 
-label {
-    display: block;
-    font-weight: bold;
-    margin-top: 10px;
-}
-
-input, select, button {
+input, select {
     width: 100%;
-    padding: 10px;
-    margin-top: 5px;
+    padding: 8px;
+    margin: 10px 0;
     border: 1px solid #ccc;
     border-radius: 5px;
 }
 
 button {
-    background-color: #28a745;
+    background-color: #007bff;
     color: white;
-    font-size: 16px;
+    padding: 10px;
+    border: none;
+    border-radius: 5px;
     cursor: pointer;
-    margin-top: 15px;
 }
 
 button:hover {
-    background-color: #218838;
+    background-color: #0056b3;
 }
-
-ul {
-    list-style-type: none;
-    padding: 0;
-}
-
-ul li {
-    background: white;
-    margin: 5px 0;
-    padding: 10px;
-    border-radius: 5px;
-    box-shadow: 0px 0px 5px rgba(0, 0, 0, 0.1);
-}
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
