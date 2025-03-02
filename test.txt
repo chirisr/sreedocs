@@ -136,10 +136,9 @@ def get_openshift_token(username, password):
         logging.error(f"Error retrieving OpenShift token: {e}")
         return None
 
-def get_pods_and_deploymentconfigs(cluster, image, token):
-    """Retrieve pods and DeploymentConfigs across all namespaces using the scanned image."""
+def get_pods_and_deployments(cluster, image, token):
+    """Retrieve pods and DeploymentConfigs using the scanned image."""
     try:
-        logging.info(f"Fetching pods and DeploymentConfigs using image: {image}")
         config.load_kube_config()
         k8s_client = client.ApiClient()
         dyn_client = DynamicClient(k8s_client)
@@ -147,25 +146,24 @@ def get_pods_and_deploymentconfigs(cluster, image, token):
         v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
         v1_dc = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
 
-        matched_pods, matched_dc = [], []
+        matched_pods, matched_deployments = [], []
 
         for ns in dyn_client.resources.get(api_version="v1", kind="Namespace").get().items:
             namespace = ns.metadata.name
             pods = v1_pods.get(namespace=namespace).items
-            dcs = v1_dc.get(namespace=namespace).items
+            deployments = v1_dc.get(namespace=namespace).items
 
             for pod in pods:
                 if image in str(pod):
                     matched_pods.append(f"{namespace}/{pod.metadata.name}")
 
-            for dc in dcs:
-                if image in str(dc):
-                    matched_dc.append(f"{namespace}/{dc.metadata.name}")
+            for deploy in deployments:
+                if image in str(deploy):
+                    matched_deployments.append(f"{namespace}/{deploy.metadata.name}")
 
-        logging.info(f"Found {len(matched_pods)} pods and {len(matched_dc)} DeploymentConfigs using {image}.")
-        return matched_pods, matched_dc
+        return matched_pods, matched_deployments
     except Exception as e:
-        logging.error(f"Error retrieving pods/DeploymentConfigs: {e}")
+        logging.error(f"Error retrieving pods/deployments: {e}")
         return [], []
 
 @app.post("/scan")
@@ -182,16 +180,30 @@ async def scan_image(
     if not openshift_token:
         raise HTTPException(status_code=401, detail="Failed to retrieve OpenShift token")
 
-    image_reference = f"{registry}/{image_name}:{tag}"
-    
-    pods, deployment_configs = get_pods_and_deploymentconfigs(cluster, image_reference, openshift_token)
+    tags = [tag] if tag else get_image_tags(registry, image_name, username, password)
+    if not tags:
+        raise HTTPException(status_code=400, detail="No image tags found")
 
-    return {
-        "image": image_reference,
+    scan_results = []
+    for tag in tags:
+        scan_id = start_scan(registry, image_name, tag, openshift_token)
+        vulnerabilities = get_scan_result(registry, image_name, tag, openshift_token)
+        status = "Vulnerable" if vulnerabilities else "Not Vulnerable"
+        scan_results.append({"image": f"{registry}/{image_name}:{tag}", "status": status, "vulnerabilities": vulnerabilities})
+
+    pods, deployments = [], []
+    for result in scan_results:
+        if result["status"] == "Vulnerable":
+            pod_list, deploy_list = get_pods_and_deployments(cluster, result["image"], openshift_token)
+            pods.extend(pod_list)
+            deployments.extend(deploy_list)
+
+    return templates.TemplateResponse("results.html", {
+        "request": request,
+        "scan_results": scan_results,
         "pods": pods,
-        "deployment_configs": deployment_configs
-    }
-
+        "deployments": deployments
+    })
 
 
 <!DOCTYPE html>
