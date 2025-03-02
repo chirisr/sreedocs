@@ -1,10 +1,11 @@
-from fastapi import FastAPI, Form, Depends, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.requests import Request
 import requests
 import json
+import pandas as pd
+import io
 import urllib3
 import logging
 from kubernetes import client, config
@@ -22,11 +23,9 @@ app = FastAPI()
 
 # Set up Jinja2 for templates
 templates = Jinja2Templates(directory="templates")
-
-# Mount static folder for CSS and other assets
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Sample OpenShift Clusters
+# Sample OpenShift Clusters (Modify as needed)
 CLUSTERS = {
     "Cluster1": "https://api.cluster1.example.com",
     "Cluster2": "https://api.cluster2.example.com"
@@ -34,9 +33,99 @@ CLUSTERS = {
 
 SCANPORTAL_API_BASE = "https://scanportal.example.com"
 
-@app.get("/", response_class=HTMLResponse)
-async def render_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "clusters": CLUSTERS})
+def get_openshift_token(username, password):
+    """Retrieve OpenShift token using ocploginconfiguration."""
+    try:
+        logging.info("Retrieving OpenShift token...")
+        token = ocploginconfiguration(ocp_username=username, ocp_password=password)
+        if token:
+            logging.info("OpenShift token retrieved successfully.")
+            return token
+        else:
+            logging.error("Failed to retrieve OpenShift token.")
+            return None
+    except Exception as e:
+        logging.error(f"Error retrieving OpenShift token: {e}")
+        return None
+
+def get_image_tags(registry, image_name, username, password):
+    """Retrieve available tags for an image from the registry."""
+    try:
+        logging.info(f"Fetching image tags for {image_name} from {registry}...")
+        auth = (username, password)
+        url = f"https://{registry}/v2/{image_name}/tags/list"
+        response = requests.get(url, auth=auth, verify=False)
+
+        if response.status_code == 200:
+            tags = response.json().get("tags", [])
+            logging.info(f"Tags retrieved: {tags}")
+            return tags
+        else:
+            logging.warning(f"Failed to retrieve tags. Status code: {response.status_code}")
+            return []
+    except Exception as e:
+        logging.error(f"Error retrieving tags: {e}")
+        return []
+
+def start_scan(registry, image_name, tag, token):
+    """Send scan request to ScanPortal."""
+    image_reference = f"{image_name}:{tag}"
+    scan_url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_reference}/scan"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    try:
+        logging.info(f"Starting scan for {image_reference}...")
+        response = requests.post(scan_url, headers=headers, verify=False)
+
+        if response.status_code == 200:
+            scan_id = response.json().get("scan_id")
+            logging.info(f"Scan started successfully. Scan ID: {scan_id}")
+            return scan_id
+        else:
+            logging.warning(f"Scan request failed for {image_reference}. Status: {response.status_code}")
+            return None
+    except Exception as e:
+        logging.error(f"Error starting scan for {image_reference}: {e}")
+        return None
+
+def get_scan_result(registry, image_name, tag, token):
+    """Retrieve scan results from ScanPortal and determine vulnerability status."""
+    image_reference = f"{image_name}:{tag}"
+    results_url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_reference}/scan"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        logging.info(f"Fetching scan results for {image_reference}...")
+        response = requests.get(results_url, headers=headers, verify=False)
+
+        if response.status_code == 200:
+            scan_data = response.json()
+            svsc_data = scan_data.get("svsc", [])
+
+            if not isinstance(svsc_data, list):
+                logging.warning(f"Unexpected 'svsc' format for {image_reference}")
+                return None  # Handle unexpected response format
+
+            vulnerabilities = []
+
+            for item in svsc_data:
+                logging.info(f"Processing scan item: {json.dumps(item, indent=2)}")  # Log each scan item
+
+                if "solution" in item and item["solution"].strip():  # Solution is not empty
+                    vulnerabilities.append({"file": item["file"], "solution": item["solution"]})
+
+            if vulnerabilities:
+                logging.info(f"Image {image_reference} is vulnerable!")
+                return vulnerabilities
+            else:
+                logging.info(f"Image {image_reference} is NOT vulnerable.")
+                return None
+        else:
+            logging.warning(f"Failed to get scan results for {image_reference}. Status: {response.status_code}")
+            return None
+    except Exception as e:
+        logging.error(f"Error retrieving scan results for {image_reference}: {e}")
+        return None
 
 def get_openshift_token(username, password):
     """Retrieve OpenShift token using ocploginconfiguration."""
@@ -47,46 +136,37 @@ def get_openshift_token(username, password):
         logging.error(f"Error retrieving OpenShift token: {e}")
         return None
 
-def get_image_tags(registry, image_name, username, password):
-    """Retrieve available tags for an image from the registry."""
+def get_pods_and_deploymentconfigs(cluster, image, token):
+    """Retrieve pods and DeploymentConfigs across all namespaces using the scanned image."""
     try:
-        url = f"https://{registry}/v2/{image_name}/tags/list"
-        response = requests.get(url, auth=(username, password), verify=False)
-        return response.json().get("tags", []) if response.status_code == 200 else []
+        logging.info(f"Fetching pods and DeploymentConfigs using image: {image}")
+        config.load_kube_config()
+        k8s_client = client.ApiClient()
+        dyn_client = DynamicClient(k8s_client)
+
+        v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
+        v1_dc = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
+
+        matched_pods, matched_dc = [], []
+
+        for ns in dyn_client.resources.get(api_version="v1", kind="Namespace").get().items:
+            namespace = ns.metadata.name
+            pods = v1_pods.get(namespace=namespace).items
+            dcs = v1_dc.get(namespace=namespace).items
+
+            for pod in pods:
+                if image in str(pod):
+                    matched_pods.append(f"{namespace}/{pod.metadata.name}")
+
+            for dc in dcs:
+                if image in str(dc):
+                    matched_dc.append(f"{namespace}/{dc.metadata.name}")
+
+        logging.info(f"Found {len(matched_pods)} pods and {len(matched_dc)} DeploymentConfigs using {image}.")
+        return matched_pods, matched_dc
     except Exception as e:
-        logging.error(f"Error retrieving tags: {e}")
-        return []
-
-def start_scan(registry, image_name, tag, token):
-    """Send scan request to ScanPortal."""
-    url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_name}:{tag}/scan"
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        response = requests.post(url, headers=headers, verify=False)
-        return response.json().get("scan_id") if response.status_code == 200 else None
-    except Exception as e:
-        logging.error(f"Error starting scan: {e}")
-        return None
-
-def get_scan_result(registry, image_name, tag, token):
-    """Retrieve scan results from ScanPortal."""
-    url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_name}:{tag}/scan"
-    headers = {"Authorization": f"Bearer {token}"}
-
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code != 200:
-            return None
-
-        scan_data = response.json()
-        vulnerabilities = [
-            {"file": item["file"], "solution": item["solution"]}
-            for item in scan_data.get("svsc", []) if item.get("solution", "").strip()
-        ]
-        return vulnerabilities if vulnerabilities else None
-    except Exception as e:
-        logging.error(f"Error retrieving scan results: {e}")
-        return None
+        logging.error(f"Error retrieving pods/DeploymentConfigs: {e}")
+        return [], []
 
 @app.post("/scan")
 async def scan_image(
@@ -102,21 +182,15 @@ async def scan_image(
     if not openshift_token:
         raise HTTPException(status_code=401, detail="Failed to retrieve OpenShift token")
 
-    tags = [tag] if tag else get_image_tags(registry, image_name, username, password)
-    if not tags:
-        raise HTTPException(status_code=400, detail="No image tags found")
+    image_reference = f"{registry}/{image_name}:{tag}"
+    
+    pods, deployment_configs = get_pods_and_deploymentconfigs(cluster, image_reference, openshift_token)
 
-    scan_results = []
-    for tag in tags:
-        scan_id = start_scan(registry, image_name, tag, openshift_token)
-        vulnerabilities = get_scan_result(registry, image_name, tag, openshift_token)
-        status = "Vulnerable" if vulnerabilities else "Not Vulnerable"
-        scan_results.append({"image": f"{registry}/{image_name}:{tag}", "status": status, "vulnerabilities": vulnerabilities})
-
-    return templates.TemplateResponse("results.html", {
-        "request": request,
-        "scan_results": scan_results
-    })
+    return {
+        "image": image_reference,
+        "pods": pods,
+        "deployment_configs": deployment_configs
+    }
 
 
 
