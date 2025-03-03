@@ -1,271 +1,39 @@
-Flowchart: Manual Certificate Creation & Deployment Using Venafi TPP as CA in OpenShift
-
-1️⃣ Access Venafi TPP
-
-User logs into Venafi Trust Protection Platform (TPP) Web Console.
-
-Navigate to "TLS Protect" → "Certificates".
-
-🔻 Next Step: Create Certificate Request
-
-2️⃣ Create Certificate Request
-
-Click "Request a Certificate".
-
-Fill in details:
-
-Common Name (CN)
-
-Subject Alternative Names (SANs)
-
-Key Algorithm & Size
-
-Certificate Policy Compliance
-
-Select Venafi as the CA.
-
-Click Submit Request.
-
-🔻 Next Step: Approval Process (If Required)
-
-3️⃣ Approval Process (If Required)
-
-If approval is required:
-
-Admin/Security team reviews the request.
-
-Validate domain compliance, key size, and policy adherence.
-
-Click "Approve" to proceed.
-
-If no approval is required, move to next step.
-
-🔻 Next Step: Venafi Issues the Certificate
-
-4️⃣ Certificate Issuance by Venafi CA
-
-Venafi TPP processes and issues the certificate.
-
-The issued certificate is available for download.
-
-🔻 Next Step: Retrieve Certificate
-
-5️⃣ Retrieve Issued Certificate from Venafi TPP
-
-User downloads the certificate bundle:
-
-Public Certificate (.crt/.pem)
-
-Private Key (.key)
-
-Intermediate CA Certificate (.crt)
-
-🔻 Next Step: Deploy Certificate in OpenShift
-
-6️⃣ Deploy Certificate to OpenShift
-
-🔹 Create OpenShift Secret for the Certificate
-
-Copy the certificate files to OpenShift:
-
-oc create secret tls my-tls-secret \
-  --cert=example.com.crt \
-  --key=example.com.key \
-  -n my-namespace
-
-🔹 Configure OpenShift Route with TLS
-
-Modify OpenShift Route configuration:
-
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: my-app-route
-  namespace: my-namespace
-spec:
-  host: example.com
-  to:
-    kind: Service
-    name: my-app-service
-  tls:
-    termination: edge
-    certificate: |-
-      -----BEGIN CERTIFICATE-----
-      ... (certificate content) ...
-      -----END CERTIFICATE-----
-    key: |-
-      -----BEGIN PRIVATE KEY-----
-      ... (private key content) ...
-      -----END PRIVATE KEY-----
-    caCertificate: |-
-      -----BEGIN CERTIFICATE-----
-      ... (CA certificate content) ...
-      -----END CERTIFICATE-----
-
-Apply the updated Route:
-
-oc apply -f my-app-route.yaml
-
-🔻 Next Step: Restart & Verify
-
-7️⃣ Restart Services & Verify Deployment
-
-Restart OpenShift pods if necessary:
-
-oc rollout restart deployment my-app -n my-namespace
-
-Verify the HTTPS connection:
-
-curl -v https://example.com
-
-Check OpenShift logs for any errors.
-
-Final Step: Certificate Successfully Deployed in OpenShift!
-
-
-
-
-
-1️⃣ Certificate Request via Cert-Manager
-
-Cert-Manager creates a CertificateRequest object.
-
-The request includes details such as:
-
-Common Name (CN) & Subject Alternative Names (SANs)
-
-Key Algorithm & Size
-
-Issuer Reference (Venafi TPP Issuer)
-
-Validity Period
-
-🔻 Next Step: Cert-Manager Submits Request to Venafi
-
-2️⃣ Cert-Manager Submits Request to Venafi TPP
-
-Cert-Manager forwards the CertificateRequest to Venafi TPP.
-
-Venafi verifies:
-
-Request details compliance with security policies.
-
-If an approval workflow is required.
-
-🔻 Next Step: Approval Process (If Required)
-
-3️⃣ Approval Process in Venafi TPP (If Configured)
-
-If approval is required:
-
-Admin/Security Team reviews and approves/rejects the request.
-
-Once approved, Venafi forwards the request to the configured CA.
-
-🔻 Next Step: Venafi Sends Request to CA
-
-4️⃣ Venafi TPP Submits Request to Certificate Authority (CA)
-
-Venafi acts as a broker and sends the request to:
-
-Public CA (DigiCert, GlobalSign, etc.)
-
-Private CA (Microsoft CA, AWS PCA, HashiCorp Vault, etc.)
-
-The CA validates the request and issues the certificate.
-
-🔻 Next Step: Venafi Issues Certificate Back to Cert-Manager
-
-5️⃣ Cert-Manager Receives Issued Certificate from Venafi
-
-The issued certificate is stored as a Secret in Kubernetes.
-
-The secret contains:
-
-Public Certificate (.crt)
-
-Private Key (.key)
-
-CA Certificate (.crt)
-
-🔻 Next Step: Deploy Certificate to Workloads
-
-6️⃣ Deploy Certificate to Kubernetes Ingress and Applications
-
-🔹 Configure Kubernetes Ingress with TLS Secret
-
-Reference the certificate secret in an Ingress resource:
-
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: my-app-ingress
-  namespace: my-namespace
-spec:
-  tls:
-  - hosts:
-    - example.com
-    secretName: my-tls-secret
-  rules:
-  - host: example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: my-app-service
-            port:
-              number: 443
-
-Apply the Ingress configuration:
-
-kubectl apply -f ingress.yaml
-
-🔹 Deploy Certificate to OpenShift Routes (If Using OpenShift)
-
-Create a Route with the certificate secret:
-
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: my-app-route
-  namespace: my-namespace
-spec:
-  host: example.com
-  to:
-    kind: Service
-    name: my-app-service
-  tls:
-    termination: edge
-    key: |-
-      -----BEGIN PRIVATE KEY-----
-      ...
-      -----END PRIVATE KEY-----
-    certificate: |-
-      -----BEGIN CERTIFICATE-----
-      ...
-      -----END CERTIFICATE-----
-    caCertificate: |-
-      -----BEGIN CERTIFICATE-----
-      ...
-      -----END CERTIFICATE-----
-
-Apply the Route configuration:
-
-oc apply -f route.yaml
-
-🔻 Next Step: Restart Services & Verify Deployment
-
-7️⃣ Restart Services & Verify HTTPS Connection
-
-Restart workloads if necessary:
-
-kubectl rollout restart deployment my-app -n my-namespace
-
-Verify HTTPS connectivity:
-
-curl -v https://example.com
-
-Check logs for potential certificate-related errors.
-
+def get_pods_and_deployments(cluster, image, token):
+    """Retrieve Pods and DeploymentConfigs across projects (namespaces) using the vulnerable image."""
+    try:
+        logging.info(f"Fetching pods and DeploymentConfigs using image: {image} in cluster: {cluster}")
+        
+        config.load_kube_config()
+        k8s_client = client.ApiClient()
+        dyn_client = DynamicClient(k8s_client)
+
+        v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
+        v1_deployments = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
+        v1_projects = dyn_client.resources.get(api_version="project.openshift.io/v1", kind="Project")  # Use Projects
+
+        matched_pods, matched_deployments = [], []
+
+        projects = v1_projects.get().items  # Fetch OpenShift Projects (Namespaces)
+
+        for project in projects:
+            namespace = project.metadata.name  # Extract namespace from Project
+            pods = v1_pods.get(namespace=namespace).items
+            deployments = v1_deployments.get(namespace=namespace).items
+
+            for pod in pods:
+                if image in json.dumps(pod):
+                    pod_info = f"Cluster: {cluster} | Namespace: {namespace} | Pod: {pod.metadata.name} | Image: {image}"
+                    logging.info(pod_info)  # Print cluster, namespace, pod, and image
+                    matched_pods.append(pod_info)
+
+            for deploy in deployments:
+                if image in json.dumps(deploy):
+                    deploy_info = f"Cluster: {cluster} | Namespace: {namespace} | DeploymentConfig: {deploy.metadata.name} | Image: {image}"
+                    logging.info(deploy_info)  # Print cluster, namespace, deployment, and image
+                    matched_deployments.append(deploy_info)
+
+        logging.info(f"Found {len(matched_pods)} Pods and {len(matched_deployments)} DeploymentConfigs using {image}.")
+        return matched_pods, matched_deployments
+    except Exception as e:
+        logging.error(f"Error retrieving Pods and DeploymentConfigs: {e}")
+        return [], []
