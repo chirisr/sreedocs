@@ -146,3 +146,116 @@ async def scan_image(request: Request, username: str = Form(...), password: str 
         "request": request, "pods": pods, "deployments": deployments,
         "deleted_pods": deleted_pods, "deleted_deployments": deleted_deployments
     })
+
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Scan Results</title>
+    <style>
+        table {
+            width: 90%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 18px;
+            text-align: left;
+        }
+        th, td {
+            padding: 10px;
+            border: 1px solid #ddd;
+        }
+        th {
+            background-color: #f4f4f4;
+        }
+        .vulnerable {
+            background-color: #ffcccc;
+        }
+        .safe {
+            background-color: #ccffcc;
+        }
+    </style>
+</head>
+<body>
+    <h2>Scan Results</h2>
+
+    {% if error %}
+        <p style="color:red;">{{ error }}</p>
+    {% else %}
+
+    <h3>Scanned Images & Results</h3>
+    <table>
+        <tr>
+            <th>Registry</th>
+            <th>Image Name</th>
+            <th>Tag</th>
+            <th>Solution</th>
+            <th>Status</th>
+        </tr>
+        {% for image in scan_results %}
+        <tr class="{% if image.solution == '' %}vulnerable{% else %}safe{% endif %}">
+            <td>{{ image.registry }}</td>
+            <td>{{ image.image_name }}</td>
+            <td>{{ image.tag }}</td>
+            <td>{{ image.solution if image.solution else 'No Solution (Vulnerable)' }}</td>
+            <td>{% if image.solution == '' %}Vulnerable{% else %}Safe{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h3>Pods & DeploymentConfigs (Using Image)</h3>
+    <table>
+        <tr>
+            <th>Namespace</th>
+            <th>Pod Name</th>
+            <th>DeploymentConfig Name</th>
+            <th>Status</th>
+        </tr>
+        {% for pod in pods %}
+        <tr class="safe">
+            <td>{{ pod.split('/')[0] }}</td>
+            <td>{{ pod.split('/')[1] }}</td>
+            <td>N/A</td>
+            <td>Safe</td>
+        </tr>
+        {% endfor %}
+        {% for deploy in deployments %}
+        <tr class="safe">
+            <td>{{ deploy.split('/')[0] }}</td>
+            <td>N/A</td>
+            <td>{{ deploy.split('/')[1] }}</td>
+            <td>Safe</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    {% if deleted_pods or deleted_deployments %}
+    <h3>Deleted (Vulnerable) Pods & DeploymentConfigs</h3>
+    <table>
+        <tr>
+            <th>Namespace</th>
+            <th>Pod Name</th>
+            <th>DeploymentConfig Name</th>
+            <th>Status</th>
+        </tr>
+        {% for pod in deleted_pods %}
+        <tr class="vulnerable">
+            <td>{{ pod.split('/')[0] }}</td>
+            <td>{{ pod.split('/')[1] }}</td>
+            <td>N/A</td>
+            <td>Vulnerable - Deleted</td>
+        </tr>
+        {% endfor %}
+        {% for deploy in deleted_deployments %}
+        <tr class="vulnerable">
+            <td>{{ deploy.split('/')[0] }}</td>
+            <td>N/A</td>
+            <td>{{ deploy.split('/')[1] }}</td>
+            <td>Vulnerable - Deleted</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% endif %}
+</body>
+</html>
