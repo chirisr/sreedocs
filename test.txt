@@ -1,301 +1,164 @@
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-from fastapi.requests import Request
-import requests
-import json
-import pandas as pd
-import io
-import urllib3
-import logging
-from kubernetes import client, config
-from openshift.dynamic import DynamicClient
-from ocploginconfiguration import ocploginconfiguration
-from typing import Optional
+1. Introduction
+This document outlines the detailed design for an OpenShift Image Scanning and Cleanup solution using FastAPI. The solution:
 
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+Provides a FastAPI-based UI for OpenShift image scanning.
+Authenticates with OpenShift and Registry using a token.
+Lists Pods and DeploymentConfigs using the provided image.
+Uses ScanPortal APIs to determine if an image is vulnerable.
+If vulnerable:
+Deletes the image from the registry.
+Stops all pods using the image.
+Deletes associated DeploymentConfigs.
+Implements logging, exception handling, and an image retention policy.
+2. High-Level Architecture
+Components
+FastAPI Backend – Handles UI inputs, OpenShift authentication, API calls, and cleanup logic.
+ScanPortal API – Used to scan images and determine vulnerability status.
+OpenShift API – Used to list pods, DeploymentConfigs, and delete resources.
+Registry API – Used to check if an image exists in the registry before scanning.
+Technology Stack
+FastAPI for backend API development.
+Jinja2 for HTML template rendering.
+Requests for API communication.
+Kubernetes & OpenShift Python SDK for interacting with OpenShift.
+Logging for debugging and execution tracking.
+3. Flowchart
+Flow Diagram for Image Scanning & Cleanup Process
+plaintext
+Copy
+Edit
++------------------------------------------------+
+| Start                                          |
++------------------------------------------------+
+         |
+         v
++--------------------------+
+| User Inputs UI Details   |
+| (Username, Cluster, etc) |
++--------------------------+
+         |
+         v
++--------------------------------------------+
+| Authenticate with OpenShift & Registry     |
+| (Using Token-Based Authentication)         |
++--------------------------------------------+
+         |
+         v
++---------------------------------------------------+
+| Check if Image Exists in Registry                 |
+|  - If Not Found → Show "Image Not Found" Message  |
++---------------------------------------------------+
+         |
+         v
++---------------------------------------------+
+| Fetch Image Tags (If No Tag Provided)       |
++---------------------------------------------+
+         |
+         v
++--------------------------------------+
+| Loop Through Tags & Scan Each Image |
++--------------------------------------+
+         |
+         v
++---------------------------------------+
+| Use ScanPortal APIs to Scan Image     |
+| - If "solution" == "" → Vulnerable    |
+| - If "solution" != "" → Not Vulnerable|
++---------------------------------------+
+         |
+         v
++--------------------------------------------------+
+| List Pods & DeploymentConfigs using the Image   |
++--------------------------------------------------+
+         |
+         v
++--------------------------------------------------+
+| If Image is Vulnerable:                          |
+| - Stop Pods                                      |
+| - Delete DeploymentConfigs                       |
+| - Remove Image from Registry                     |
++--------------------------------------------------+
+         |
+         v
++---------------------------+
+| Return Scan Results to UI |
++---------------------------+
+         |
+         v
++--------------------------------------+
+| End Process - Show Results in UI    |
++--------------------------------------+
+4. Detailed Component Design
+4.1 FastAPI Backend
+Endpoints:
+/ → Renders index.html for user input.
+/scan (POST) → Handles scanning logic.
+Key Functions:
+check_image_in_registry(): Checks if the image exists in the registry.
+scan_image_with_scanportal(): Calls ScanPortal API to scan images.
+find_pods_using_image(): Lists pods using the image.
+find_deploymentconfigs_using_image(): Lists DeploymentConfigs using the image.
+stop_pods(): Stops pods using the vulnerable image.
+delete_deploymentconfigs(): Deletes DeploymentConfigs using the vulnerable image.
+4.2 OpenShift API Integration
+Uses OpenShift DynamicClient to interact with resources.
+Retrieves Pods and DeploymentConfigs across all namespaces.
+Uses OpenShift authentication via ocploginconfiguration.
+4.3 ScanPortal API Integration
+POST /scan → Initiates image scan.
+GET /scan/status → Checks scan progress.
+GET /scan/results → Retrieves scan results.
+Decision Logic:
+If "solution": "" → Image is Vulnerable.
+If "solution" has a value → Image is Not Vulnerable.
+4.4 Registry API Integration
+Checks if an image exists in the registry before scanning.
+If the image is not found, the UI displays "Image Not Found".
+4.5 Image Retention Policy
+Some images should not be deleted (e.g., system-critical images).
+The script maintains a list of protected images (IMAGE_RETENTION_LIST).
+If an image is in this list, skip deletion.
+5. Error Handling & Logging
+5.1 Error Handling
+OpenShift Authentication Errors
+Error: Invalid credentials.
+Action: Return 401 Unauthorized.
+Registry Connectivity Issues
+Error: Cannot reach the registry.
+Action: Return 503 Service Unavailable.
+ScanPortal API Errors
+Error: Scan request failure.
+Action: Log and retry.
+Deletion Errors
+Error: Failed to delete pods/DeploymentConfigs.
+Action: Log error and continue.
+5.2 Logging
+Uses logging module to capture execution flow.
+Logs:
+Authentication attempts.
+API requests & responses.
+Identified pods/DeploymentConfigs.
+ScanPortal scan status.
+Vulnerable image deletions.
+6. UI Design
+6.1 index.html (Input Form)
+Fields:
+Username & Password
+OpenShift Cluster (Dropdown)
+Registry Name (Dropdown)
+Image Name
+Optional Image Tag
+Submit Button → Calls /scan API.
+6.2 results.html (Scan Results)
+Displays:
+Image Scan Status
+Pods & DeploymentConfigs using the image
+Actions Taken (if vulnerable)
+7. Conclusion
+This design ensures:
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-app = FastAPI()
-
-# Set up Jinja2 for templates
-templates = Jinja2Templates(directory="templates")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Sample OpenShift Clusters (Modify as needed)
-CLUSTERS = {
-    "Cluster1": "https://api.cluster1.example.com",
-    "Cluster2": "https://api.cluster2.example.com"
-}
-
-SCANPORTAL_API_BASE = "https://scanportal.example.com"
-
-def get_openshift_token(username, password):
-    """Retrieve OpenShift token using ocploginconfiguration."""
-    try:
-        logging.info("Retrieving OpenShift token...")
-        token = ocploginconfiguration(ocp_username=username, ocp_password=password)
-        if token:
-            logging.info("OpenShift token retrieved successfully.")
-            return token
-        else:
-            logging.error("Failed to retrieve OpenShift token.")
-            return None
-    except Exception as e:
-        logging.error(f"Error retrieving OpenShift token: {e}")
-        return None
-
-def get_image_tags(registry, image_name, username, password):
-    """Retrieve available tags for an image from the registry."""
-    try:
-        logging.info(f"Fetching image tags for {image_name} from {registry}...")
-        auth = (username, password)
-        url = f"https://{registry}/v2/{image_name}/tags/list"
-        response = requests.get(url, auth=auth, verify=False)
-
-        if response.status_code == 200:
-            tags = response.json().get("tags", [])
-            logging.info(f"Tags retrieved: {tags}")
-            return tags
-        else:
-            logging.warning(f"Failed to retrieve tags. Status code: {response.status_code}")
-            return []
-    except Exception as e:
-        logging.error(f"Error retrieving tags: {e}")
-        return []
-
-def start_scan(registry, image_name, tag, token):
-    """Send scan request to ScanPortal."""
-    image_reference = f"{image_name}:{tag}"
-    scan_url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_reference}/scan"
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    try:
-        logging.info(f"Starting scan for {image_reference}...")
-        response = requests.post(scan_url, headers=headers, verify=False)
-
-        if response.status_code == 200:
-            scan_id = response.json().get("scan_id")
-            logging.info(f"Scan started successfully. Scan ID: {scan_id}")
-            return scan_id
-        else:
-            logging.warning(f"Scan request failed for {image_reference}. Status: {response.status_code}")
-            return None
-    except Exception as e:
-        logging.error(f"Error starting scan for {image_reference}: {e}")
-        return None
-
-def get_scan_result(registry, image_name, tag, token):
-    """Retrieve scan results from ScanPortal and determine vulnerability status."""
-    image_reference = f"{image_name}:{tag}"
-    results_url = f"{SCANPORTAL_API_BASE}/v1/scan/reg/{registry}/image/{image_reference}/scan"
-    headers = {"Authorization": f"Bearer {token}"}
-
-    try:
-        logging.info(f"Fetching scan results for {image_reference}...")
-        response = requests.get(results_url, headers=headers, verify=False)
-
-        if response.status_code == 200:
-            scan_data = response.json()
-            svsc_data = scan_data.get("svsc", [])
-
-            if not isinstance(svsc_data, list):
-                logging.warning(f"Unexpected 'svsc' format for {image_reference}")
-                return None  # Handle unexpected response format
-
-            vulnerabilities = []
-
-            for item in svsc_data:
-                logging.info(f"Processing scan item: {json.dumps(item, indent=2)}")  # Log each scan item
-
-                if "solution" in item and item["solution"].strip():  # Solution is not empty
-                    vulnerabilities.append({"file": item["file"], "solution": item["solution"]})
-
-            if vulnerabilities:
-                logging.info(f"Image {image_reference} is vulnerable!")
-                return vulnerabilities
-            else:
-                logging.info(f"Image {image_reference} is NOT vulnerable.")
-                return None
-        else:
-            logging.warning(f"Failed to get scan results for {image_reference}. Status: {response.status_code}")
-            return None
-    except Exception as e:
-        logging.error(f"Error retrieving scan results for {image_reference}: {e}")
-        return None
-
-def get_openshift_token(username, password):
-    """Retrieve OpenShift token using ocploginconfiguration."""
-    try:
-        logging.info("Retrieving OpenShift token...")
-        return ocploginconfiguration(ocp_username=username, ocp_password=password)
-    except Exception as e:
-        logging.error(f"Error retrieving OpenShift token: {e}")
-        return None
-
-def get_pods_and_deployments(cluster, image, token):
-    """Retrieve pods and DeploymentConfigs using the scanned image."""
-    try:
-        config.load_kube_config()
-        k8s_client = client.ApiClient()
-        dyn_client = DynamicClient(k8s_client)
-
-        v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
-        v1_dc = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
-
-        matched_pods, matched_deployments = [], []
-
-        for ns in dyn_client.resources.get(api_version="v1", kind="Namespace").get().items:
-            namespace = ns.metadata.name
-            pods = v1_pods.get(namespace=namespace).items
-            deployments = v1_dc.get(namespace=namespace).items
-
-            for pod in pods:
-                if image in str(pod):
-                    matched_pods.append(f"{namespace}/{pod.metadata.name}")
-
-            for deploy in deployments:
-                if image in str(deploy):
-                    matched_deployments.append(f"{namespace}/{deploy.metadata.name}")
-
-        return matched_pods, matched_deployments
-    except Exception as e:
-        logging.error(f"Error retrieving pods/deployments: {e}")
-        return [], []
-
-@app.post("/scan")
-async def scan_image(
-    request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    cluster: str = Form(...),
-    registry: str = Form(...),
-    image_name: str = Form(...),
-    tag: Optional[str] = Form(None)
-):
-    openshift_token = get_openshift_token(username, password)
-    if not openshift_token:
-        raise HTTPException(status_code=401, detail="Failed to retrieve OpenShift token")
-
-    tags = [tag] if tag else get_image_tags(registry, image_name, username, password)
-    if not tags:
-        raise HTTPException(status_code=400, detail="No image tags found")
-
-    scan_results = []
-    for tag in tags:
-        scan_id = start_scan(registry, image_name, tag, openshift_token)
-        vulnerabilities = get_scan_result(registry, image_name, tag, openshift_token)
-        status = "Vulnerable" if vulnerabilities else "Not Vulnerable"
-        scan_results.append({"image": f"{registry}/{image_name}:{tag}", "status": status, "vulnerabilities": vulnerabilities})
-
-    pods, deployments = [], []
-    for result in scan_results:
-        if result["status"] == "Vulnerable":
-            pod_list, deploy_list = get_pods_and_deployments(cluster, result["image"], openshift_token)
-            pods.extend(pod_list)
-            deployments.extend(deploy_list)
-
-    return templates.TemplateResponse("results.html", {
-        "request": request,
-        "scan_results": scan_results,
-        "pods": pods,
-        "deployments": deployments
-    })
-
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Image Scan Portal</title>
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <h1>Scan an Image</h1>
-    <form action="/scan" method="post">
-        Username: <input type="text" name="username" required><br>
-        Password: <input type="password" name="password" required><br>
-        Cluster: 
-        <select name="cluster">
-            {% for cluster, url in clusters.items() %}
-                <option value="{{ url }}">{{ cluster }}</option>
-            {% endfor %}
-        </select><br>
-        Registry: <input type="text" name="registry" required><br>
-        Image Name: <input type="text" name="image_name" required><br>
-        Image Tag (optional): <input type="text" name="tag"><br>
-        <button type="submit">Scan</button>
-    </form>
-</body>
-</html>
-
-
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Scan Results</title>
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <h1>Scan Results</h1>
-    <ul>
-        {% for result in scan_results %}
-            <li>{{ result.image }} - {{ result.status }}</li>
-            {% if result.status == "Vulnerable" %}
-                <ul>
-                    {% for vuln in result.vulnerabilities %}
-                        <li>{{ vuln.file }} - {{ vuln.solution }}</li>
-                    {% endfor %}
-                </ul>
-            {% endif %}
-        {% endfor %}
-    </ul>
-</body>
-</html>
-
-
-
-
-
-body {
-    font-family: Arial, sans-serif;
-    margin: 40px;
-    padding: 20px;
-    background-color: #f4f4f4;
-}
-
-h1 {
-    color: #333;
-}
-
-form {
-    background: white;
-    padding: 20px;
-    border-radius: 5px;
-    box-shadow: 0px 0px 10px #aaa;
-    max-width: 400px;
-}
-
-input, select {
-    width: 100%;
-    padding: 8px;
-    margin: 10px 0;
-    border: 1px solid #ccc;
-    border-radius: 5px;
-}
-
-button {
-    background-color: #007bff;
-    color: white;
-    padding: 10px;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
-}
-
-button:hover {
-    background-color: #0056b3;
-}
+Secure authentication with OpenShift & Registry.
+Automated scanning of images using ScanPortal.
+Automated cleanup for vulnerable images.
+Logging & exception handling for reliability.
+Would you like any modifications to the design or an additional feature? 🚀
