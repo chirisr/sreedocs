@@ -161,4 +161,3 @@ Secure authentication with OpenShift & Registry.
 Automated scanning of images using ScanPortal.
 Automated cleanup for vulnerable images.
 Logging & exception handling for reliability.
-Would you like any modifications to the design or an additional feature? 🚀
