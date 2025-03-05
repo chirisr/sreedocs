@@ -1,211 +1,148 @@
-from fastapi import FastAPI, Depends, HTTPException, Request, Form
+from fastapi import FastAPI, Form, Request, Depends, HTTPException
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 import requests
 import json
+import urllib3
 import logging
 from kubernetes import client, config
 from openshift.dynamic import DynamicClient
-from urllib3.exceptions import InsecureRequestWarning
+from ocploginconfiguration import ocploginconfiguration
+from typing import Optional, List
 
 # Disable SSL warnings
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# FastAPI app
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 app = FastAPI()
+
+# Set up Jinja2 for templates
 templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Logging configuration
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Sample OpenShift Clusters (Modify as needed)
+CLUSTERS = {
+    "Cluster1": "https://api.cluster1.example.com",
+    "Cluster2": "https://api.cluster2.example.com"
+}
 
-# API Endpoints
-OPENSHIFT_API_BASE = "https://your-openshift-api"
-REGISTRY_URL = "https://your-artifactory-registry"
-SCAN_PORTAL_BASE_URL = "https://scanportal-api"
-POST_SCAN_ENDPOINT = f"{SCAN_PORTAL_BASE_URL}/post_scan"
-GET_SCAN_RESULTS_ENDPOINT = f"{SCAN_PORTAL_BASE_URL}/get_scan_results"
+SCANPORTAL_API_BASE = "https://scanportal.example.com"
 
-# Image Retention Policy (Modify as needed)
-RETAINED_IMAGES = ["stable-image:latest", "trusted-base:v1"]
-
-
-def authenticate_openshift(username: str, password: str):
-    """Authenticate with OpenShift and return the API token."""
-    auth_url = f"{OPENSHIFT_API_BASE}/oauth/authorize"
-    response = requests.post(auth_url, auth=(username, password), verify=False)
-    if response.status_code == 200:
-        return response.json().get("access_token")
-    raise HTTPException(status_code=401, detail="OpenShift authentication failed")
-
-
-def authenticate_registry(username: str, password: str):
-    """Authenticate with Artifactory registry and get a token."""
-    auth_url = f"{REGISTRY_URL}/api/security/token"
-    data = {"username": username, "password": password, "scope": "member-of-groups:readers"}
-    response = requests.post(auth_url, json=data, verify=False)
-
-    if response.status_code == 200:
-        return response.json().get("access_token")
-    raise HTTPException(status_code=401, detail="Registry authentication failed")
-
-def check_image_in_registry(registry, image_name, token):
-    """Check if image exists in registry."""
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{registry}/v2/{image_name}/tags/list"
-    
+def get_openshift_token(username, password):
+    """Retrieve OpenShift token."""
     try:
-        response = requests.get(url, headers=headers, verify=False)
+        logging.info("Retrieving OpenShift token...")
+        token = ocploginconfiguration(ocp_username=username, ocp_password=password)
+        return token if token else None
+    except Exception as e:
+        logging.error(f"Error retrieving OpenShift token: {e}")
+        return None
+
+def get_image_tags(registry, image_name, username, password):
+    """Retrieve available tags for an image from the registry."""
+    try:
+        url = f"https://{registry}/v2/{image_name}/tags/list"
+        response = requests.get(url, auth=(username, password), verify=False)
+
         if response.status_code == 200:
             return response.json().get("tags", [])
-        else:
-            logging.error(f"Image not found: {image_name} in {registry}")
-            return []
+        return []
     except Exception as e:
-        logging.error(f"Error checking image in registry: {e}")
+        logging.error(f"Error retrieving tags: {e}")
         return []
 
-
-def get_image_tags(registry: str, image: str, token: str):
-    """Retrieve image tags from the registry."""
-    url = f"{REGISTRY_URL}/artifactory/api/docker/{registry}/v2/{image}/tags/list"
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(url, headers=headers, verify=False)
-
-    if response.status_code == 200:
-        return response.json().get("tags", [])
-    return None  # Image does not exist
-
-
-def scan_image(image: str, tag: str):
-    """Trigger image scan via ScanPortal."""
-    payload = {"image": image, "tag": tag}
-    response = requests.post(POST_SCAN_ENDPOINT, json=payload, verify=False)
-
-    if response.status_code == 200:
-        return response.json()
-    return None
-
-
-def get_scan_results(image: str, tag: str):
-    """Retrieve scan results from ScanPortal."""
-    response = requests.get(f"{GET_SCAN_RESULTS_ENDPOINT}?image={image}&tag={tag}", verify=False)
-
-    if response.status_code == 200:
-        return response.json()
-    return None
-
-
-def analyze_scan_results(scan_results):
-    """Analyze scan results to determine if an image is vulnerable."""
-    lsvsc_blocks = scan_results.get("lsvsc", [])
-
-    for block in lsvsc_blocks:
-        if "solution" in block and block["solution"] == "":
-            return "Vulnerable"
-
-    return "Not Vulnerable"
-
-
-def delete_image_from_registry(registry: str, image: str, tag: str, token: str):
-    """Delete a vulnerable image from the registry."""
-    url = f"{REGISTRY_URL}/artifactory/api/docker/{registry}/v2/{image}/manifests/{tag}"
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(url, headers=headers, verify=False)
-
-    if response.status_code == 202:
-        logger.info(f"Deleted {image}:{tag} from registry.")
-        return True
-    else:
-        logger.error(f"Failed to delete {image}:{tag} from registry: {response.text}")
+def check_image_exists(registry, image_name, tag, token):
+    """Check if the image exists in the registry before scanning."""
+    try:
+        url = f"https://{registry}/v2/{image_name}/manifests/{tag}"
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.get(url, headers=headers, verify=False)
+        return response.status_code == 200
+    except Exception as e:
+        logging.error(f"Error checking image existence: {e}")
         return False
 
-
-def cleanup_openshift_resources(token: str, image: str, tag: str):
-    """Stop pods and delete DeploymentConfigs using a vulnerable image."""
-    config.load_kube_config()
-    dyn_client = DynamicClient(client.ApiClient())
-
-    v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
-    v1_dc = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
-
-    namespaces = [ns.metadata.name for ns in dyn_client.resources.get(api_version="v1", kind="Namespace").get().items]
-
-    for ns in namespaces:
-        pods = v1_pods.get(namespace=ns)
-        for pod in pods.items:
-            for container in pod.spec.containers:
-                if f"{image}:{tag}" in container.image:
-                    logger.info(f"Deleting pod {pod.metadata.name} in namespace {ns}")
-                    v1_pods.delete(name=pod.metadata.name, namespace=ns)
-
-        dcs = v1_dc.get(namespace=ns)
-        for dc in dcs.items:
-            for container in dc.spec.template.spec.containers:
-                if f"{image}:{tag}" in container.image:
-                    logger.info(f"Deleting DeploymentConfig {dc.metadata.name} in namespace {ns}")
-                    v1_dc.delete(name=dc.metadata.name, namespace=ns)
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Render index page."""
-    return templates.TemplateResponse("index.html", {"request": request})
-
-
-@app.post("/scan_image/")
-async def scan_image_api(
-    request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    cluster: str = Form(...),
-    registry: str = Form(...),
-    image: str = Form(...),
-    tag: str = Form(None),
-):
-    """Main workflow: Authenticate, check registry, scan, analyze results, and clean up if needed."""
+def get_pods_and_deployments(cluster, image, token):
+    """Retrieve pods and deployments across all namespaces using the image."""
     try:
-        # Authenticate with OpenShift
-        openshift_token = authenticate_openshift(username, password)
+        config.load_kube_config()
+        k8s_client = client.ApiClient()
+        dyn_client = DynamicClient(k8s_client)
 
-        # Authenticate with Registry
-        registry_token = authenticate_registry(username, password)
+        projects = dyn_client.resources.get(api_version="project.openshift.io/v1", kind="Project").get().items
+        matched_pods, matched_deployments = [], []
 
-        tags = check_image_in_registry(registry, image_name, openshift_token)
-        if not tags:
-            return templates.TemplateResponse("results.html", {"request": request, "message": "Image not found in registry."})
+        for project in projects:
+            namespace = project.metadata.name
+            v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod").get(namespace=namespace).items
+            v1_deployments = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig").get(namespace=namespace).items
 
-        # Check if the image exists
-        available_tags = get_image_tags(registry, image, registry_token)
-        if available_tags is None:
-            return templates.TemplateResponse("results.html", {"request": request, "message": "Image not found."})
+            for pod in v1_pods:
+                if image in str(pod):
+                    matched_pods.append(f"{namespace}/{pod.metadata.name}")
 
-        # If a tag is provided, check if it exists
-        if tag and tag not in available_tags:
-            return templates.TemplateResponse("results.html", {"request": request, "message": f"Tag '{tag}' not found."})
+            for deploy in v1_deployments:
+                if image in str(deploy):
+                    matched_deployments.append(f"{namespace}/{deploy.metadata.name}")
 
-        # Determine which tags to scan
-        tags_to_scan = [tag] if tag else available_tags
-
-        results = []
-        for tag in tags_to_scan:
-            scan_response = scan_image(image, tag)
-            if not scan_response:
-                continue
-
-            scan_results = get_scan_results(image, tag)
-            status = analyze_scan_results(scan_results)
-
-            results.append({"image": image, "tag": tag, "status": status})
-
-            if status == "Vulnerable":
-                image_tag = f"{image}:{tag}"
-                if image_tag not in RETAINED_IMAGES:
-                    delete_image_from_registry(registry, image, tag, registry_token)
-                    cleanup_openshift_resources(openshift_token, image, tag)
-
-        return templates.TemplateResponse("results.html", {"request": request, "results": results})
-
+        return matched_pods, matched_deployments
     except Exception as e:
-        logger.error(f"Error occurred: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logging.error(f"Error retrieving pods and deployments: {e}")
+        return [], []
+
+def delete_vulnerable_resources(namespace, pods, deployments, token):
+    """Delete pods and DeploymentConfigs if image is vulnerable."""
+    try:
+        config.load_kube_config()
+        k8s_client = client.ApiClient()
+        dyn_client = DynamicClient(k8s_client)
+
+        v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
+        v1_deployments = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
+
+        deleted_pods, deleted_deployments = [], []
+
+        for pod in pods:
+            v1_pods.delete(name=pod.split("/")[-1], namespace=namespace)
+            deleted_pods.append(pod)
+
+        for deploy in deployments:
+            v1_deployments.delete(name=deploy.split("/")[-1], namespace=namespace)
+            deleted_deployments.append(deploy)
+
+        return deleted_pods, deleted_deployments
+    except Exception as e:
+        logging.error(f"Error deleting resources: {e}")
+        return [], []
+
+@app.post("/scan")
+async def scan_image(request: Request, username: str = Form(...), password: str = Form(...),
+                     cluster: str = Form(...), registry: str = Form(...), image_name: str = Form(...),
+                     tag: Optional[str] = Form(None)):
+
+    openshift_token = get_openshift_token(username, password)
+    if not openshift_token:
+        raise HTTPException(status_code=401, detail="Failed to retrieve OpenShift token")
+
+    tags = [tag] if tag else get_image_tags(registry, image_name, username, password)
+    if not tags:
+        return templates.TemplateResponse("results.html", {"request": request, "error": "Image not found."})
+
+    scan_results, pods, deployments, deleted_pods, deleted_deployments = [], [], [], [], []
+
+    for tag in tags:
+        if check_image_exists(registry, image_name, tag, openshift_token):
+            pods, deployments = get_pods_and_deployments(cluster, f"{registry}/{image_name}:{tag}", openshift_token)
+            
+            if pods or deployments:
+                del_pods, del_deploys = delete_vulnerable_resources(cluster, pods, deployments, openshift_token)
+                deleted_pods.extend(del_pods)
+                deleted_deployments.extend(del_deploys)
+
+    return templates.TemplateResponse("results.html", {
+        "request": request, "pods": pods, "deployments": deployments,
+        "deleted_pods": deleted_pods, "deleted_deployments": deleted_deployments
+    })
