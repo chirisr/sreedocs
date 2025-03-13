@@ -1,261 +1,201 @@
-from fastapi import FastAPI, Form, Request, Depends, HTTPException
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-import requests
+import os
 import json
-import urllib3
 import logging
+import requests
+from fastapi import FastAPI, HTTPException
 from kubernetes import client, config
 from openshift.dynamic import DynamicClient
-from ocploginconfiguration import ocploginconfiguration
-from typing import Optional, List
+from urllib3.exceptions import InsecureRequestWarning
+from datetime import datetime, timedelta
 
 # Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-# Setup logging
+# Load Kubernetes Config
+try:
+    config.load_incluster_config()
+except Exception as e:
+    logging.error(f"Failed to load Kubernetes config: {e}")
+    raise
+
+k8s_client = client.CoreV1Api()
+dyn_client = DynamicClient(client.ApiClient())
+
+# Logging Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 app = FastAPI()
 
-# Set up Jinja2 for templates
-templates = Jinja2Templates(directory="templates")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Sample OpenShift Clusters (Modify as needed)
-CLUSTERS = {
-    "Cluster1": "https://api.cluster1.example.com",
-    "Cluster2": "https://api.cluster2.example.com"
-}
-
-SCANPORTAL_API_BASE = "https://scanportal.example.com"
-
-def get_openshift_token(username, password):
-    """Retrieve OpenShift token."""
+# Read ConfigMap Values
+def get_configmap(namespace, name):
     try:
-        logging.info("Retrieving OpenShift token...")
-        token = ocploginconfiguration(ocp_username=username, ocp_password=password)
-        return token if token else None
+        cm = k8s_client.read_namespaced_config_map(name, namespace)
+        return cm.data
     except Exception as e:
-        logging.error(f"Error retrieving OpenShift token: {e}")
-        return None
+        logging.error(f"Failed to read ConfigMap {name}: {e}")
+        raise HTTPException(status_code=500, detail=f"ConfigMap error: {e}")
 
-def get_image_tags(registry, image_name, username, password):
-    """Retrieve available tags for an image from the registry."""
+# Read Secrets
+def get_secret(namespace, name):
     try:
-        url = f"https://{registry}/v2/{image_name}/tags/list"
-        response = requests.get(url, auth=(username, password), verify=False)
-
-        if response.status_code == 200:
-            return response.json().get("tags", [])
-        return []
+        secret = k8s_client.read_namespaced_secret(name, namespace)
+        return json.loads(secret.data["credentials"])
     except Exception as e:
-        logging.error(f"Error retrieving tags: {e}")
-        return []
+        logging.error(f"Failed to read Secret {name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Secret error: {e}")
 
-def check_image_exists(registry, image_name, tag, token):
-    """Check if the image exists in the registry before scanning."""
+# Fetch Inputs from ConfigMap
+try:
+    config_data = get_configmap("image-scanner", "configmap-properties")
+    DELETE_OPERATION = config_data.get("DELETE_OPERATION", "False").lower() == "true"
+    REGISTRY_URL = config_data["REGISTRY_URL"]
+    CLUSTER_URL = config_data["CLUSTER_URL"]
+    DEFAULT_IMAGE_NAME = config_data["DEFAULT_IMAGE_NAME"]
+    RETENTION_DAYS = int(config_data["RETENTION_DAYS"])
+except Exception as e:
+    logging.error(f"Error loading configuration: {e}")
+    raise
+
+# Get OpenShift Secrets (Registry Credentials)
+try:
+    secrets = get_secret("image-scanner", "registry-secrets")
+    REGISTRY_USER = secrets["user"]
+    REGISTRY_PASS = secrets["password"]
+except Exception as e:
+    logging.error(f"Error loading secrets: {e}")
+    raise
+
+# Headers for API Authentication
+auth = (REGISTRY_USER, REGISTRY_PASS)
+
+# Function to list stale images
+def list_stale_images(image_name=None, tag=None):
     try:
-        url = f"https://{registry}/v2/{image_name}/manifests/{tag}"
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get(url, headers=headers, verify=False)
-        return response.status_code == 200
+        cutoff_date = datetime.utcnow() - timedelta(days=RETENTION_DAYS)
+        stale_images = []
+        image_name = image_name or DEFAULT_IMAGE_NAME  # Use default if not provided
+
+        if image_name:
+            images = [image_name]
+        else:
+            response = requests.get(f"{REGISTRY_URL}/v2/_catalog", auth=auth, verify=False)
+            response.raise_for_status()
+            images = response.json().get("repositories", [])
+
+        for image in images:
+            tags_resp = requests.get(f"{REGISTRY_URL}/v2/{image}/tags/list", auth=auth, verify=False)
+            if tags_resp.status_code != 200:
+                continue
+
+            tags = [tag] if tag else tags_resp.json().get("tags", [])
+
+            for t in tags:
+                manifest_resp = requests.get(f"{REGISTRY_URL}/v2/{image}/manifests/{t}", auth=auth, verify=False)
+                if manifest_resp.status_code != 200:
+                    continue
+
+                created_date = manifest_resp.json().get("created")
+                if created_date:
+                    created_dt = datetime.strptime(created_date, "%Y-%m-%dT%H:%M:%SZ")
+                    if created_dt < cutoff_date:
+                        stale_images.append(f"{image}:{t}")
+
+        return stale_images
     except Exception as e:
-        logging.error(f"Error checking image existence: {e}")
-        return False
+        logging.error(f"Error listing stale images: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list stale images: {e}")
 
-def get_pods_and_deployments(cluster, image, token):
-    """Retrieve pods and deployments across all namespaces using the image."""
+# Function to list stale pods
+def list_stale_pods():
     try:
-        config.load_kube_config()
-        k8s_client = client.ApiClient()
-        dyn_client = DynamicClient(k8s_client)
-
-        projects = dyn_client.resources.get(api_version="project.openshift.io/v1", kind="Project").get().items
-        matched_pods, matched_deployments = [], []
-
-        for project in projects:
-            namespace = project.metadata.name
-            v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod").get(namespace=namespace).items
-            v1_deployments = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig").get(namespace=namespace).items
-
-            for pod in v1_pods:
-                if image in str(pod):
-                    matched_pods.append(f"{namespace}/{pod.metadata.name}")
-
-            for deploy in v1_deployments:
-                if image in str(deploy):
-                    matched_deployments.append(f"{namespace}/{deploy.metadata.name}")
-
-        return matched_pods, matched_deployments
-    except Exception as e:
-        logging.error(f"Error retrieving pods and deployments: {e}")
-        return [], []
-
-def delete_vulnerable_resources(namespace, pods, deployments, token):
-    """Delete pods and DeploymentConfigs if image is vulnerable."""
-    try:
-        config.load_kube_config()
-        k8s_client = client.ApiClient()
-        dyn_client = DynamicClient(k8s_client)
-
         v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
-        v1_deployments = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
-
-        deleted_pods, deleted_deployments = [], []
+        pods = v1_pods.get().items
+        stale_pods = []
 
         for pod in pods:
-            v1_pods.delete(name=pod.split("/")[-1], namespace=namespace)
-            deleted_pods.append(pod)
+            creation_time = pod.metadata.creationTimestamp
+            if creation_time:
+                created_dt = datetime.strptime(creation_time, "%Y-%m-%dT%H:%M:%SZ")
+                if created_dt < datetime.utcnow() - timedelta(days=RETENTION_DAYS):
+                    stale_pods.append(pod.metadata.name)
 
-        for deploy in deployments:
-            v1_deployments.delete(name=deploy.split("/")[-1], namespace=namespace)
-            deleted_deployments.append(deploy)
-
-        return deleted_pods, deleted_deployments
+        return stale_pods
     except Exception as e:
-        logging.error(f"Error deleting resources: {e}")
-        return [], []
+        logging.error(f"Error listing stale pods: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list stale pods: {e}")
 
-@app.post("/scan")
-async def scan_image(request: Request, username: str = Form(...), password: str = Form(...),
-                     cluster: str = Form(...), registry: str = Form(...), image_name: str = Form(...),
-                     tag: Optional[str] = Form(None)):
+# Function to list stale DeploymentConfigs
+def list_stale_deploymentconfigs():
+    try:
+        v1_dcs = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
+        dcs = v1_dcs.get().items
+        stale_dcs = []
 
-    openshift_token = get_openshift_token(username, password)
-    if not openshift_token:
-        raise HTTPException(status_code=401, detail="Failed to retrieve OpenShift token")
+        for dc in dcs:
+            creation_time = dc.metadata.creationTimestamp
+            if creation_time:
+                created_dt = datetime.strptime(creation_time, "%Y-%m-%dT%H:%M:%SZ")
+                if created_dt < datetime.utcnow() - timedelta(days=RETENTION_DAYS):
+                    stale_dcs.append(dc.metadata.name)
 
-    tags = [tag] if tag else get_image_tags(registry, image_name, username, password)
-    if not tags:
-        return templates.TemplateResponse("results.html", {"request": request, "error": "Image not found."})
+        return stale_dcs
+    except Exception as e:
+        logging.error(f"Error listing stale deployment configs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list stale deployment configs: {e}")
 
-    scan_results, pods, deployments, deleted_pods, deleted_deployments = [], [], [], [], []
+# Delete Image
+def delete_image(image, tag):
+    try:
+        response = requests.delete(f"{REGISTRY_URL}/v2/{image}/manifests/{tag}", auth=auth, verify=False)
+        response.raise_for_status()
+        logging.info(f"Deleted image: {image}:{tag}")
+    except requests.RequestException as e:
+        logging.error(f"Failed to delete {image}:{tag}: {e}")
 
-    for tag in tags:
-        if check_image_exists(registry, image_name, tag, openshift_token):
-            pods, deployments = get_pods_and_deployments(cluster, f"{registry}/{image_name}:{tag}", openshift_token)
-            
-            if pods or deployments:
-                del_pods, del_deploys = delete_vulnerable_resources(cluster, pods, deployments, openshift_token)
-                deleted_pods.extend(del_pods)
-                deleted_deployments.extend(del_deploys)
+# Delete Pod
+def delete_pod(pod_name):
+    try:
+        v1_pods = dyn_client.resources.get(api_version="v1", kind="Pod")
+        v1_pods.delete(name=pod_name, namespace="image-scanner")
+        logging.info(f"Deleted pod: {pod_name}")
+    except Exception as e:
+        logging.error(f"Failed to delete pod {pod_name}: {e}")
 
-    return templates.TemplateResponse("results.html", {
-        "request": request, "pods": pods, "deployments": deployments,
-        "deleted_pods": deleted_pods, "deleted_deployments": deleted_deployments
-    })
+# Delete DeploymentConfig
+def delete_deploymentconfig(dc_name):
+    try:
+        v1_dcs = dyn_client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig")
+        v1_dcs.delete(name=dc_name, namespace="image-scanner")
+        logging.info(f"Deleted DeploymentConfig: {dc_name}")
+    except Exception as e:
+        logging.error(f"Failed to delete DeploymentConfig {dc_name}: {e}")
 
+# FastAPI Route for Scan & Delete
+@app.get("/scan-and-clean")
+def scan_and_clean(image_name: str = None, tag: str = None):
+    try:
+        stale_images = list_stale_images(image_name, tag)
+        stale_pods = list_stale_pods()
+        stale_dcs = list_stale_deploymentconfigs()
 
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Scan Results</title>
-    <style>
-        table {
-            width: 90%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            font-size: 18px;
-            text-align: left;
+        if DELETE_OPERATION:
+            for img in stale_images:
+                img_name, img_tag = img.split(":")
+                delete_image(img_name, img_tag)
+
+            for pod in stale_pods:
+                delete_pod(pod)
+
+            for dc in stale_dcs:
+                delete_deploymentconfig(dc)
+
+        return {
+            "cluster_url": CLUSTER_URL,
+            "stale_images": stale_images,
+            "stale_pods": stale_pods,
+            "stale_deploymentconfigs": stale_dcs,
+            "delete_operation": DELETE_OPERATION
         }
-        th, td {
-            padding: 10px;
-            border: 1px solid #ddd;
-        }
-        th {
-            background-color: #f4f4f4;
-        }
-        .vulnerable {
-            background-color: #ffcccc;
-        }
-        .safe {
-            background-color: #ccffcc;
-        }
-    </style>
-</head>
-<body>
-    <h2>Scan Results</h2>
-
-    {% if error %}
-        <p style="color:red;">{{ error }}</p>
-    {% else %}
-
-    <h3>Scanned Images & Results</h3>
-    <table>
-        <tr>
-            <th>Registry</th>
-            <th>Image Name</th>
-            <th>Tag</th>
-            <th>Solution</th>
-            <th>Status</th>
-        </tr>
-        {% for image in scan_results %}
-        <tr class="{% if image.solution == '' %}vulnerable{% else %}safe{% endif %}">
-            <td>{{ image.registry }}</td>
-            <td>{{ image.image_name }}</td>
-            <td>{{ image.tag }}</td>
-            <td>{{ image.solution if image.solution else 'No Solution (Vulnerable)' }}</td>
-            <td>{% if image.solution == '' %}Vulnerable{% else %}Safe{% endif %}</td>
-        </tr>
-        {% endfor %}
-    </table>
-
-    <h3>Pods & DeploymentConfigs (Using Image)</h3>
-    <table>
-        <tr>
-            <th>Namespace</th>
-            <th>Pod Name</th>
-            <th>DeploymentConfig Name</th>
-            <th>Status</th>
-        </tr>
-        {% for pod in pods %}
-        <tr class="safe">
-            <td>{{ pod.split('/')[0] }}</td>
-            <td>{{ pod.split('/')[1] }}</td>
-            <td>N/A</td>
-            <td>Safe</td>
-        </tr>
-        {% endfor %}
-        {% for deploy in deployments %}
-        <tr class="safe">
-            <td>{{ deploy.split('/')[0] }}</td>
-            <td>N/A</td>
-            <td>{{ deploy.split('/')[1] }}</td>
-            <td>Safe</td>
-        </tr>
-        {% endfor %}
-    </table>
-
-    {% if deleted_pods or deleted_deployments %}
-    <h3>Deleted (Vulnerable) Pods & DeploymentConfigs</h3>
-    <table>
-        <tr>
-            <th>Namespace</th>
-            <th>Pod Name</th>
-            <th>DeploymentConfig Name</th>
-            <th>Status</th>
-        </tr>
-        {% for pod in deleted_pods %}
-        <tr class="vulnerable">
-            <td>{{ pod.split('/')[0] }}</td>
-            <td>{{ pod.split('/')[1] }}</td>
-            <td>N/A</td>
-            <td>Vulnerable - Deleted</td>
-        </tr>
-        {% endfor %}
-        {% for deploy in deleted_deployments %}
-        <tr class="vulnerable">
-            <td>{{ deploy.split('/')[0] }}</td>
-            <td>N/A</td>
-            <td>{{ deploy.split('/')[1] }}</td>
-            <td>Vulnerable - Deleted</td>
-        </tr>
-        {% endfor %}
-    </table>
-    {% endif %}
-
-    {% endif %}
-</body>
-</html>
+    except Exception as e:
+        logging.error(f"Unexpected error in scan-and-clean: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
