@@ -250,3 +250,37 @@ data:
     retention: 7
     delete_deployments: true
     filter_namespace: "my-project"
+
+def get_image_digest(repo_name, image_name, tag):
+    """Get the digest of the image from the exact repository."""
+    url = f"{REGISTRY_URL}/v2/{repo_name}/manifests/{tag}"
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.headers.get("Docker-Content-Digest")
+    else:
+        logger.error(f"Failed to get digest: {response.status_code} - {response.text}")
+        return None
+
+def delete_image(repo_name, image_name, tag):
+    """Delete an image from the specified repository using its digest."""
+    digest = get_image_digest(repo_name, image_name, tag)
+    if not digest:
+        logger.error(f"Image {image_name}:{tag} not found in {repo_name}.")
+        return {"error": "Image not found"}
+
+    # Delete the image using its digest
+    delete_url = f"{REGISTRY_URL}/v2/{repo_name}/manifests/{digest}"
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    delete_response = requests.delete(delete_url, headers=headers)
+
+    if delete_response.status_code == 202:
+        logger.info(f"Deleted image: {repo_name}/{image_name}:{tag}")
+        return {"message": f"Deleted {repo_name}/{image_name}:{tag}"}
+    else:
+        logger.error(f"Failed to delete image: {delete_response.status_code} - {delete_response.text}")
+        return {"error": "Failed to delete image"}
+
+# Example Usage
+delete_image(REPO_NAME, IMAGE_NAME, TAG)
