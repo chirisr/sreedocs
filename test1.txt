@@ -199,3 +199,60 @@ def scan_and_clean(image_name: str = None, tag: str = None):
     except Exception as e:
         logging.error(f"Unexpected error in scan-and-clean: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+import json
+import base64
+import os
+from kubernetes import client, config
+from openshift.dynamic import DynamicClient
+
+def get_kube_client():
+    """Initialize Kubernetes/OpenShift client using in-cluster config or local KUBECONFIG."""
+    try:
+        config.load_incluster_config()  # Inside OpenShift
+    except:
+        config.load_kube_config()  # Local testing
+    
+    return DynamicClient(client.ApiClient())
+
+def get_registry_token(namespace, secret_name):
+    """Retrieve Bearer token from OpenShift registry secret (.dockerconfigjson)."""
+    dyn_client = get_kube_client()
+    
+    try:
+        # Get the Secret resource
+        v1_secrets = dyn_client.resources.get(api_version="v1", kind="Secret")
+        secret = v1_secrets.get(name=secret_name, namespace=namespace)
+
+        # Decode the .dockerconfigjson content
+        docker_config_json_b64 = secret.data[".dockerconfigjson"]
+        docker_config_json = json.loads(base64.b64decode(docker_config_json_b64).decode("utf-8"))
+
+        # Extract authentication details
+        auths = docker_config_json.get("auths", {})
+        for registry, creds in auths.items():
+            if "auth" in creds:
+                auth_token = base64.b64decode(creds["auth"]).decode("utf-8")
+                username, password = auth_token.split(":", 1)
+                return registry, username, password
+            elif "identitytoken" in creds:
+                return registry, creds["identitytoken"]  # Bearer Token Authentication
+        
+        print("No authentication credentials found.")
+        return None, None
+    except Exception as e:
+        print(f"Error fetching registry secret: {e}")
+        return None, None
+
+# Replace with your OpenShift namespace and secret name
+NAMESPACE = os.getenv("NAMESPACE", "my-namespace")
+SECRET_NAME = "my-registry-secret"
+
+# Get Registry Token
+REGISTRY_URL, REGISTRY_TOKEN = get_registry_token(NAMESPACE, SECRET_NAME)
+
+if REGISTRY_TOKEN:
+    print(f"Successfully retrieved Bearer token for {REGISTRY_URL}")
+else:
+    print("Failed to retrieve registry token.")
+
