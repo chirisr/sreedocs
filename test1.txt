@@ -256,3 +256,42 @@ if REGISTRY_TOKEN:
 else:
     print("Failed to retrieve registry token.")
 
+
+import json
+import os
+import base64
+
+def get_registry_credentials():
+    try:
+        # Read the secret from environment variable
+        docker_config_base64 = os.getenv("DOCKER_CONFIG_JSON")
+
+        if not docker_config_base64:
+            print("DOCKER_CONFIG_JSON not found in environment variables")
+            return None, None, None
+
+        # Decode base64 (if necessary)
+        docker_config_json = json.loads(docker_config_base64)
+
+        # Extract registry credentials
+        auths = docker_config_json.get("auths", {})
+        for registry, creds in auths.items():
+            username = creds.get("username")
+            password = creds.get("password")
+
+            if username and password:
+                return registry, username, password
+
+        return None, None, None
+    except Exception as e:
+        print(f"Error reading registry credentials: {e}")
+        return None, None, None
+
+# Get credentials
+REGISTRY_URL, REGISTRY_USERNAME, REGISTRY_PASSWORD = get_registry_credentials()
+
+if REGISTRY_USERNAME and REGISTRY_PASSWORD:
+    print(f"Registry: {REGISTRY_URL}, Username: {REGISTRY_USERNAME}")
+else:
+    print("Failed to retrieve registry credentials")
+
