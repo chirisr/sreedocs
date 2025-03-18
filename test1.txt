@@ -295,3 +295,55 @@ if REGISTRY_USERNAME and REGISTRY_PASSWORD:
 else:
     print("Failed to retrieve registry credentials")
 
+
+import requests
+from requests.auth import HTTPBasicAuth
+
+def delete_image(api_url, username, password, repo, repopath, **extra_params):
+    """
+    Deletes an image from the repository using an API call.
+
+    Parameters:
+    - api_url (str): The API endpoint URL.
+    - username (str): Authentication username.
+    - password (str): Authentication password.
+    - repo (str): Repository name.
+    - repopath (str): Repository path.
+    - extra_params (dict): Additional parameters to pass in the request.
+
+    Returns:
+    - dict: JSON response if successful, otherwise an error message.
+    """
+    params = {
+        "repo": repo,
+        "repopath": repopath,
+        **extra_params  # Include additional parameters
+    }
+
+    headers = {
+        "accept": "application/json"
+    }
+
+    try:
+        response = requests.delete(api_url, auth=HTTPBasicAuth(username, password), headers=headers, params=params)
+
+        if response.status_code == 200:
+            return response.json()  # Return JSON response
+        else:
+            return {"error": f"Failed to delete image. Status: {response.status_code}", "details": response.text}
+
+    except requests.exceptions.RequestException as e:
+        return {"error": "Request failed", "details": str(e)}
+
+# Example usage:
+if __name__ == "__main__":
+    api_url = "https://your-api-url.com"  # Replace with actual API URL
+    username = "your-username"
+    password = "your-password"
+    repo = "your-repo-name"
+    repopath = "your-repo-path"
+    
+    response = delete_image(api_url, username, password, repo, repopath, additional_param1="value1")
+    print(response)
+
+
