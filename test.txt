@@ -304,3 +304,297 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# app.py (FastAPI application with logging, OpenShift namespace aware, ocplogin and registry token)
+from fastapi import FastAPI, HTTPException
+import datetime
+import requests
+import urllib3
+from openshift.dynamic import DynamicClient
+import os
+import yaml
+from kubernetes import config, client
+import base64
+import logging
+import uvicorn
+import subprocess
+import json
+from tabulate import tabulate
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+app = FastAPI()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def get_namespace():
+    """Gets the current namespace from the environment or defaults to 'default'."""
+    namespace = os.getenv("NAMESPACE", "default")
+    logger.info(f"Running in namespace: {namespace}")
+    return namespace
+
+def load_config_from_configmap(namespace, configmap_name):
+    config.load_incluster_config()
+    v1 = client.CoreV1Api()
+    try:
+        configmap = v1.read_namespaced_config_map(configmap_name, namespace)
+        return yaml.safe_load(configmap.data["config.yaml"])
+    except client.exceptions.ApiException as e:
+        logger.error(f"Error loading ConfigMap: {e}")
+        raise HTTPException(status_code=500, detail=f"Error loading ConfigMap: {e}")
+
+def load_secrets_from_secret(namespace, secret_name):
+    config.load_incluster_config()
+    v1 = client.CoreV1Api()
+    try:
+        secret = v1.read_namespaced_secret(secret_name, namespace)
+        return {k: base64.b64decode(v).decode('utf-8') for k, v in secret.data.items()}
+    except client.exceptions.ApiException as e:
+        logger.error(f"Error loading Secret: {e}")
+        raise HTTPException(status_code=500, detail=f"Error loading Secret: {e}")
+
+def get_openshift_client():
+    try:
+        result = subprocess.run(["oc", "whoami", "--token"], capture_output=True, text=True, check=True)
+        token = result.stdout.strip()
+
+        api_url = config.load_incluster_config().host
+        k8s_client = DynamicClient(
+            client=requests.Session(),
+            url=api_url,
+            token=token,
+            verify=False,
+        )
+        return k8s_client
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error getting OpenShift token: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting OpenShift token: {e}")
+
+def get_registry_token(registry_url):
+    try:
+        result = subprocess.run(["oc", "whoami", "--token"], capture_output=True, text=True, check=True)
+        token = result.stdout.strip()
+        result = subprocess.run(["oc", "image", "sign", "--token", token, f"{registry_url}/dummy:dummy", "--dry-run", "--insecure-skip-tls"], capture_output=True, text=True, check=True)
+        lines = result.stderr.splitlines()
+        for line in lines:
+            if "Bearer" in line:
+                registry_token = line.split("Bearer ")[1].strip()
+                return registry_token
+        raise Exception("Registry token not found.")
+    except Exception as e:
+        logger.error(f"Error getting registry token: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting registry token: {e}")
+
+def get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag=None):
+    try:
+        registry_api_url = f"https://{registry_url}/v2/{image_name}/tags/list"
+        headers = {"Authorization": f"Bearer {registry_token}"}
+        response = requests.get(registry_api_url, headers=headers, verify=False)
+        response.raise_for_status()
+        tags_list = response.json().get("tags", [])
+        if specific_tag and specific_tag not in tags_list:
+            return {}
+
+        image_digests_with_dates = {}
+        for tag in tags_list:
+            if specific_tag and tag != specific_tag:
+                continue
+
+            manifest_api_url = f"https://{registry_url}/v2/{image_name}/manifests/{tag}"
+            manifest_response = requests.get(manifest_api_url, headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json", "Authorization": f"Bearer {registry_token}"}, verify=False)
+            manifest_response.raise_for_status()
+            manifest = manifest_response.json()
+            image_identifier = manifest["config"]["digest"]
+            creation_date = get_image_creation_date(registry_url, image_name, image_identifier, registry_token)
+            if creation_date:
+                image_digests_with_dates[image_identifier] = creation_date
+
+        return image_digests_with_dates
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error retrieving image digests and creation dates: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving image digests and creation dates: {e}")
+
+def get_image_creation_date(registry_url, image_name, image_identifier, registry_token):
+    try:
+        config_api_url = f"https://{registry_url}/v2/{image_name}/blobs/{image_identifier}"
+        response = requests.get(config_api_url, headers={"Authorization": f"Bearer {registry_token}"}, verify=False)
+        response.raise_for_status()
+        config = response.json()
+        created_str = config.get("config", {}).get("Created")
+
+        if created_str and created_str.strip():
+            return datetime.datetime.fromisoformat(created_str)
+        else:
+            logger.warning(f"Creation date not found for {registry_url}/{image_name}/{image_identifier}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error retrieving image creation date: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving image creation date: {e}")
+
+def remove_image_identifier(registry_url, image_name, image_identifier, registry_token):
+    try:
+        artifactory_url = f"https://{registry_url}/artifactory/api/search/aql"
+        headers = {"Authorization": f"Bearer {registry_token}", "Content-Type": "text/plain"}
+        aql_query = f"""items.find({{"repo":"{image_name.split('/')[0]}","path":"{'/'.join(image_name.split('/')[1:])}","name":"{image_identifier.split(':')[1]}"}})"""
+        response = requests.post(artifactory_url, headers=headers, data=aql_query, verify=False)
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        if results:
+            for result in results:
+                delete_url = f"https://{registry_url}/artifactory/{result['repo']}/{result['path']}/{result['name']}"
+                delete_response = requests.delete(delete_url, headers={"Authorization": f"Bearer {registry_token}"}, verify=False)
+                delete_response.raise_for_status()
+                logger.info(f"Removed image: {delete_url}")
+
+        else:
+            logger.warning(f"Image identifier not found in Artifactory: {image_identifier}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error removing image: {e}")
+        raise HTTPException(status_code=500, detail=f"Error removing image: {e}")
+
+def get_pods(client, namespace):
+    try:
+        pods = client.resources.get(api_version='v1', kind='Pod').get(namespace=namespace).items
+        return pods
+    except Exception as e:
+        logger.error(f"Error retrieving pods: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving pods: {e}")
+
+def remove_pod(client, namespace, pod_name):
+    try:
+        client.resources.get(api_version='v1', kind='Pod').delete(namespace=namespace, name=pod_name)
+        logger.info(f"Deleted pod {pod_name} in namespace {namespace}.")
+    except Exception as e:
+        logger.error(f"Error removing pod: {e}")
+        raise HTTPException(status_code=500, detail=f"Error removing pod: {e}")
+
+def get_deployment_configs(client, namespace):
+    try:
+        deployment_configs = client.resources.get(api_version='apps.openshift.io/v1', kind='DeploymentConfig').get(namespace=namespace).items
+        return deployment_configs
+    except Exception as e:
+        logger.error(f"Error retrieving deployment configs: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving deployment configs: {e}")
+
+def remove_deployment_config(client, namespace, deployment_config_name):
+    try:
+        client.resources.get(api_version='apps.openshift.io/v1', kind='DeploymentConfig').delete(namespace=namespace, name=deployment_config_name)
+        logger.info(f"Deleted deployment config {deployment_config_name} in namespace {namespace}.")
+    except Exception as e:
+        logger.error(f"Error removing deployment config: {e}")
+        raise HTTPException(status_code=500, detail=f"Error removing deployment config: {e}")
+
+@app.post("/clean-registry/")
+def clean_registry(specific_tag: str = None, delete_operation: bool = False):
+    namespace = get_namespace()
+    config_map_name = os.getenv("CONFIGMAP_NAME", "registry-cleaner-config")
+    secret_name = os.getenv("SECRET_NAME", "registry-cleaner-secret")
+
+    logger.info(f"Starting registry cleaning process. Specific tag: {specific_tag}, Delete operation: {delete_operation}")
+
+    config_data = load_config_from_configmap(namespace, config_map_name)
+    secret_data = load_secrets_from_secret(namespace, secret_name)
+
+    api_url = config_data.get("api_url")
+    registry_url = config_data.get("registry_url")
+    image_name = config_data.get("image_name")
+    retention = config_data.get("retention", int(config_data.get("retention", 30))) #configmap value or 30 default
+    skip_tags_str = config_data.get("skip_tags", "")
+    skip_tags = [tag.strip() for tag in skip_tags_str.split(",") if tag.strip()]
+    delete_deployments_str = config_data.get("delete_deployments", "false")
+    delete_deployments = delete_deployments_str.lower() == "true"
+    filter_namespace = config_data.get("filter_namespace")
+
+    client = get_openshift_client()
+    registry_token = get_registry_token(registry_url)
+
+    image_identifiers_with_dates = get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag)
+
+    stale_images = {}
+    cutoff_date = datetime.datetime.now() - datetime.timedelta(days=retention)
+
+    sorted_images = sorted(image_identifiers_with_dates.items(), key=lambda item: item[1], reverse=True) #sort by creation time, latest first.
+
+    keep_images = [image_identifier for image_identifier, _ in sorted_images] # keep the most recent ones.
+    del sorted_images[0:len(keep_images)] # remove the kept images from the sorted list.
+
+    for image_identifier, creation_date in image_identifiers_with_dates.items():
+        tag = None
+        for t, d in get_image_digests(registry_url,image_name,registry_token).items():
+            if d == image_identifier:
+                tag = t
+                break
+
+        if creation_date < cutoff_date and image_identifier not in keep_images and tag not in skip_tags:
+            stale_images[image_identifier] = tag
+
+    image_table = []
+    for image_identifier, tag in stale_images.items():
+        image_table.append([f"{registry_url}/{image_name}@{image_identifier}", tag])
+
+    deployment_configs_to_delete = []
+
+    if stale_images and delete_deployments:
+        deployment_configs = get_deployment_configs(client, namespace)
+        for deployment_config in deployment_configs:
+            deployment_config_namespace = deployment_config.metadata.namespace
+            if filter_namespace and deployment_config_namespace != filter_namespace:
+                continue
+            deployment_config_name = deployment_config.metadata.name
+            containers = deployment_config.spec.template.spec.containers
+            for container in containers:
+                image = container.image
+                for image_identifier in stale_images:
+                    if f"{registry_url}/{image_name}@{image_identifier}" in image:
+                        deployment_configs_to_delete.append([deployment_config_namespace, deployment_config_name])
+                        break
+
+        if delete_operation:
+            deleted_images = []
+            deleted_deployment_configs = []
+
+            for image_identifier, tag in stale_images.items():
+                remove_image_identifier(registry_url, image_name, image_identifier, registry_token)
+                deleted_images.append([f"{registry_url}/{image_name}@{image_identifier}", tag])
+
+            for deployment_config_namespace, deployment_config_name in deployment_configs_to_delete:
+                remove_deployment_config(client, deployment_config_namespace, deployment_config_name)
+                deleted_deployment_configs.append([deployment_config_namespace, deployment_config_name])
+
+            logger.info("Registry cleaning process completed with deletion.")
+
+            image_table_formatted = tabulate(deleted_images, headers=["Deleted Image", "Tag"], tablefmt="grid")
+            deployment_configs_table_formatted = tabulate(deleted_deployment_configs, headers=["Deleted DeploymentConfig Namespace", "Deleted DeploymentConfig"], tablefmt="grid")
+
+            return {
+                "deleted_stale_images": image_table_formatted,
+                "deleted_deployment_configs": deployment_configs_table_formatted,
+                "message": "Registry cleaning process completed with deletion."
+            }
+
+        else:
+            logger.info("Registry cleaning process completed without deletion.")
+
+            image_table_formatted = tabulate(image_table, headers=["Image", "Tag"], tablefmt="grid")
+            deployment_configs_table_formatted = tabulate(deployment_configs_to_delete, headers=["DeploymentConfig Namespace", "DeploymentConfig"], tablefmt="grid")
+
+            return {
+                "stale_images": image_table_formatted,
+                "deployment_configs_to_delete": deployment_configs_table_formatted,
+                "message": "Registry cleaning process completed without deletion."
+            }
+
+    else:
+        logger.info("No stale images found, or delete not enabled.")
+        return {"message": "No stale images found, or delete not enabled."}
+
+def main():
+    uvicorn.run("app:app", host="0.0.0.0", port=8000)
+
+if __name__ == "__main__":
+    main()
