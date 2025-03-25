@@ -410,3 +410,36 @@ def get_image_digests_with_creation_dates(registry_url, image_name, registry_tok
     except requests.exceptions.RequestException as e:
         logger.error(f"Error retrieving image digests and creation dates: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrieving image digests and creation dates: {e}")
+
+@app.post("/clean-registry/")
+def clean_registry(specific_tag: str = None, delete_operation: bool = False):
+    # ... (rest of your code)
+
+    image_data = get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag)
+
+    stale_images = {}
+    cutoff_date = datetime.datetime.now(tz.UTC) - datetime.timedelta(days=retention)
+
+    sorted_items = sorted(image_data.items(), key=lambda item: item[1]["creation_date"], reverse=True) #sort by creation date.
+
+    keep_images = []
+    for tag, data in sorted_items:
+      if data["creation_date"] is not None:
+        keep_images.append(data["image_identifier"])
+    if len(keep_images) > 0:
+      keep_images = [keep_images[0]] #keep only latest image.
+
+    for tag, data in image_data.items():
+        image_identifier = data["image_identifier"]
+        creation_date = data["creation_date"]
+
+        if creation_date is None:
+          continue
+        if creation_date < cutoff_date and image_identifier not in keep_images and tag not in skip_tags:
+            stale_images[tag] = image_identifier #store tag as key.
+
+    image_table = []
+    for tag in stale_images: #iterate stale_images by tag.
+        image_table.append([f"{registry_url}/{image_name}:{tag}", tag])
+
+    # ... (rest of your code)
