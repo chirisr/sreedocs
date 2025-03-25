@@ -513,3 +513,60 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
         image_table.append([f"{registry_url}/{image_name}:{tag}", tag])
 
     # ... (rest of your code)
+
+
+import requests
+import json
+import logging
+from fastapi import HTTPException
+
+def execute_artifactory_aql_query(artifactory_url, repo_name, image_name_or_digest, registry_token):
+    """
+    Executes an Artifactory AQL query to find artifacts based on repo, path, and sorts by creation date.
+
+    Args:
+        artifactory_url (str): The base URL of the Artifactory instance.
+        repo_name (str): The name of the repository.
+        image_name_or_digest (str): The image name or digest to search for.
+        registry_token (str): The authentication token for Artifactory.
+
+    Returns:
+        list: A list of AQL query results (dictionaries), or None if an error occurs.
+    Raises:
+        HTTPException: if the artifactory api response fails.
+    """
+    try:
+        aql_url = f"{artifactory_url}/artifactory/api/search/aql"
+        headers = {
+            "Authorization": f"Bearer {registry_token}",
+            "Content-Type": "text/plain",
+        }
+        aql_query = f"""items.find(
+            {{
+                "repo": {{"$eq": "{repo_name}"}},
+                "path": {{"$match": "{image_name_or_digest}"}}
+            }}
+        ).sort({{"$desc": ["created"]}})"""
+
+        response = requests.post(aql_url, headers=headers, data=aql_query, verify=False)
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+
+        results = response.json().get("results", [])
+        return results
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error executing Artifactory AQL query: {e}")
+        raise HTTPException(status_code=500, detail=f"Error executing Artifactory AQL query: {e}")
+    except json.JSONDecodeError as e:
+      logging.error(f"Error decoding Artifactory response: {e}")
+      raise HTTPException(status_code=500, detail=f"Error decoding Artifactory response: {e}")
+
+# Example Usage (replace with your actual values):
+# artifactory_url = "https://your-artifactory-url"
+# repo_name = "your-repo-name"
+# image_name_or_digest = "your-image-name-or-digest"
+# registry_token = "your-artifactory-token"
+# results = execute_artifactory_aql_query(artifactory_url, repo_name, image_name_or_digest, registry_token)
+# if results:
+#     for result in results:
+#         print(result)
