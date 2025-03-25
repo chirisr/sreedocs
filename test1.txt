@@ -346,4 +346,38 @@ if __name__ == "__main__":
     response = delete_image(api_url, username, password, repo, repopath, additional_param1="value1")
     print(response)
 
+# ... (other imports and functions)
+
+@app.post("/clean-registry/")
+def clean_registry(specific_tag: str = None, delete_operation: bool = False):
+    # ... (rest of your code)
+
+    image_identifiers_with_dates = get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag)
+
+    stale_images = {}
+    cutoff_date = datetime.datetime.now(tz.UTC) - datetime.timedelta(days=retention)
+
+    sorted_images = sorted(image_identifiers_with_dates.items(), key=lambda item: item[1], reverse=True)
+
+    keep_images = []
+    for image_identifier, creation_date in sorted_images:
+      if creation_date is not None:
+        keep_images.append(image_identifier)
+    if len(keep_images) > 0:
+      keep_images = [keep_images[0]] #keep only latest image.
+
+    for image_identifier, creation_date in image_identifiers_with_dates.items():
+        tag = None
+        #find tag
+        for image_tag, image_creation_date in get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag).items():
+            if image_creation_date == creation_date :
+                tag = image_tag
+                break
+
+        if creation_date is None:
+          continue
+        if creation_date < cutoff_date and image_identifier not in keep_images and tag not in skip_tags:
+            stale_images[image_identifier] = tag
+
+    # ... (rest of your code)
 
