@@ -14,6 +14,7 @@ import subprocess
 import json
 from tabulate import tabulate
 from dateutil import parser, tz
+from typing import Optional, List, Dict, Any
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -44,19 +45,22 @@ def remove_image_tag_manifest(registry_url, image_name, tag, registry_token):
                     logger.info(f"Removed image tag: {delete_url}")
             else:
                 logger.warning(f"Image tag not found in Artifactory: {tag}")
+                return {"image_tag_not_found": True, "message": f"Image tag {tag} not found in Artifactory."} #added
         except requests.exceptions.RequestException as e:
             logger.error(f"Error deleting image tag: {e}")
             raise HTTPException(status_code=500, detail=f"Error deleting image tag: {e}")
 
     else:
         logger.warning(f"Manifest list not found, skipping delete tag {tag}")
+        return {"manifest_list_not_found": True, "message": f"Manifest list not found for tag {tag}."} #added
         
 
-def get_pods(client, namespace):
+def get_pods(client, namespace) -> List[Dict[str, Any]]: #added type hints
     try:
         pods = client.resources.get(api_version='v1', kind='Pod').get(namespace=namespace).items
         if not pods:
             logger.warning(f"No pods found in namespace {namespace}.")
+            return []  # Return an empty list, and handle in main function
         return pods
     except Exception as e:
         logger.error(f"Error retrieving pods: {e}")
@@ -70,11 +74,12 @@ def remove_pod(client, namespace, pod_name):
         logger.error(f"Error removing pod: {e}")
         raise HTTPException(status_code=500, detail=f"Error removing pod: {e}")
 
-def get_deployment_configs(client, namespace):
+def get_deployment_configs(client, namespace) -> List[Dict[str, Any]]: #added type hints
     try:
         deployment_configs = client.resources.get(api_version='apps.openshift.io/v1', kind='DeploymentConfig').get(namespace=namespace).items
         if not deployment_configs:
             logger.warning(f"No deployment configs found in namespace {namespace}.")
+            return [] # Return empty list and handle in main
         return deployment_configs
     except Exception as e:
         logger.error(f"Error retrieving deployment configs: {e}")
@@ -88,7 +93,7 @@ def remove_deployment_config(client, namespace, deployment_config_name):
         logger.error(f"Error removing deployment config: {e}")
         raise HTTPException(status_code=500, detail=f"Error removing deployment config: {e}")
 
-def get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag=None):
+def get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag=None) -> Dict[str, Optional[datetime.datetime]]: #added type hints
     try:
         registry_api_url = f"https://{registry_url}/v2/{image_name}/tags/list"
         headers = {"Authorization": f"Bearer {registry_token}"}
@@ -96,10 +101,11 @@ def get_image_digests_with_creation_dates(registry_url, image_name, registry_tok
         response.raise_for_status()
         tags_list = response.json().get("tags", [])
         if specific_tag and specific_tag not in tags_list:
+            logger.warning(f"Image with tag {specific_tag} not found.")
             return {}
 
         image_digests_with_dates = {}
-        image_found = False  # Add this flag
+        image_found = False
         for tag in tags_list:
             if specific_tag and tag != specific_tag:
                 continue
@@ -108,19 +114,20 @@ def get_image_digests_with_creation_dates(registry_url, image_name, registry_tok
             manifest_response = requests.get(manifest_api_url, headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json", "Authorization": f"Bearer {registry_token}"}, verify=False)
             manifest_response.raise_for_status()
             manifest = manifest_response.json()
-            if "config" in manifest and "digest" in manifest["config"]: #check if manifest config exists.
+            if "config" in manifest and "digest" in manifest["config"]:
                 image_identifier = manifest["config"]["digest"]
                 creation_date = get_image_creation_date(registry_url, image_name, tag, registry_token)
                 if creation_date:
                     image_digests_with_dates[image_identifier] = creation_date
-                    image_found = True  # Set the flag if image details are found
+                    image_found = True
                 else:
                     logger.warning(f"Failed to retrieve creation date for image: {image_name}:{tag}")
             else:
                 logger.warning(f"Image config or digest not found in manifest for {image_name}:{tag}")
         
         if not image_found:
-            logger.warning(f"No images found for {image_name} with tag {specific_tag}.") # Log if no images found
+            logger.warning(f"No images found for {image_name} with tag {specific_tag}.")
+            return {} #important
 
         return image_digests_with_dates
 
@@ -212,11 +219,16 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
 
     deployment_configs_to_delete = []
     pods_to_delete = []
+    
 
     if stale_images and delete_deployments:
         deployment_configs = get_deployment_configs(client, namespace)
         if not deployment_configs:
             logger.warning(f"No DeploymentConfigs found in namespace {namespace} during deletion check.")
+            return {
+                "deployment_configs_not_found": True,
+                "message": f"No DeploymentConfigs found in namespace {namespace}."
+            }
         else:
             for deployment_config in deployment_configs:
                 deployment_config_namespace = deployment_config.metadata.namespace
@@ -233,6 +245,10 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
         pods = get_pods(client, namespace)
         if not pods:
             logger.warning(f"No Pods found in namespace {namespace} during deletion check.")
+            return {
+                "pods_not_found": True,
+                "message": f"No Pods found in namespace {namespace}."
+            }
         else:
             for pod in pods:
                 pod_namespace = pod.metadata.namespace
@@ -258,7 +274,12 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                     deleted_images.append([f"{registry_url}/{image_name}:{tag}", tag])
                     logger.info(f"Deleted image {registry_url}/{image_name}:{tag}")
                 else:
-                    logger.warning(f"Image {registry_url}/{image_name}:{tag} does not exist. Skipping deletion.")
+                    log_message = f"Image {registry_url}/{image_name}:{tag} does not exist. Skipping deletion."
+                    logger.warning(log_message)
+                    return {
+                        "image_not_found": True,  # Add to the response
+                        "image_not_found_message": log_message
+                    }
 
             for deployment_config_namespace, deployment_config_name in deployment_configs_to_delete:
                 try:
@@ -266,7 +287,12 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                     deleted_deployment_configs.append([deployment_config_namespace, deployment_config_name])
                 except HTTPException as e:
                     if "Not Found" in e.detail:
-                        logger.warning(f"DeploymentConfig {deployment_config_name} in namespace {deployment_config_namespace} not found. Skipping deletion.")
+                        log_message = f"DeploymentConfig {deployment_config_name} in namespace {deployment_config_namespace} not found. Skipping deletion."
+                        logger.warning(log_message)
+                        return {
+                            "deployment_config_not_found": True,
+                            "deployment_config_not_found_message": log_message
+                        }
                     else:
                         raise  # Re-raise the exception if it's not a "Not Found" error
 
@@ -279,7 +305,12 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                         logger.info(f"Deleted pod {pod_name} in namespace {pod_namespace}.")
                     except HTTPException as e:
                         if "Not Found" in e.detail:
-                            logger.warning(f"Pod {pod_name} in namespace {pod_namespace} not found. Skipping deletion.")
+                            log_message = f"Pod {pod_name} in namespace {pod_namespace} not found. Skipping deletion."
+                            logger.warning(log_message)
+                            return {
+                                "pod_not_found": True,
+                                "pod_not_found_message": log_message
+                            }
                         else:
                             raise  # Re-raise the exception if it's not a "Not Found" error
                 else:
@@ -290,6 +321,7 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
             image_table_formatted = tabulate(deleted_images, headers=["Deleted Image", "Tag"], tablefmt="grid")
             deployment_configs_table_formatted = tabulate(deleted_deployment_configs, headers=["Deleted DeploymentConfig Namespace", "Deleted DeploymentConfig"], tablefmt="grid")
             pods_table_formatted = tabulate(deleted_pods, headers=["Deleted Pod Namespace", "Deleted Pod Name"], tablefmt="grid")
+            
             return {
                 "deleted_stale_images": image_table_formatted,
                 "deleted_deployment_configs": deployment_configs_table_formatted,
@@ -301,6 +333,7 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
             image_table_formatted = tabulate(image_table, headers=["Image", "Tag"], tablefmt="grid")
             deployment_configs_table_formatted = tabulate(deployment_configs_to_delete, headers=["DeploymentConfig Namespace", "DeploymentConfig"], tablefmt="grid")
             pods_table_formatted = tabulate(pods_to_delete, headers=["Pod Namespace", "Pod Name"], tablefmt="grid")
+            
             return {
                 "stale_images": image_table_formatted,
                 "deployment_configs_to_delete": deployment_configs_table_formatted,
