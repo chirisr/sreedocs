@@ -381,3 +381,32 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
 
     # ... (rest of your code)
 
+def get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag=None):
+    try:
+        registry_api_url = f"https://{registry_url}/v2/{image_name}/tags/list"
+        headers = {"Authorization": f"Bearer {registry_token}"}
+        response = requests.get(registry_api_url, headers=headers, verify=False)
+        response.raise_for_status()
+        tags_list = response.json().get("tags", [])
+        if specific_tag and specific_tag not in tags_list:
+            return {}
+
+        tags_with_dates = {} #correct dict.
+        for tag in tags_list:
+            if specific_tag and tag != specific_tag:
+                continue
+
+            manifest_api_url = f"https://{registry_url}/v2/{image_name}/manifests/{tag}"
+            manifest_response = requests.get(manifest_api_url, headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json", "Authorization": f"Bearer {registry_token}"}, verify=False)
+            manifest_response.raise_for_status()
+            manifest = manifest_response.json()
+            image_identifier = manifest["config"]["digest"]
+            creation_date = get_image_creation_date(registry_url, image_name, tag, registry_token) #use tag.
+            if creation_date:
+                tags_with_dates[tag] = creation_date #tag as key.
+
+        return tags_with_dates
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error retrieving image digests and creation dates: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving image digests and creation dates: {e}")
