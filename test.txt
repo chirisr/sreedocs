@@ -1,5 +1,5 @@
 # app.py (FastAPI application with logging, OpenShift namespace aware, ocplogin and Artifactory AQL)
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 import datetime
 import requests
 import urllib3
@@ -45,22 +45,22 @@ def remove_image_tag_manifest(registry_url, image_name, tag, registry_token):
                     logger.info(f"Removed image tag: {delete_url}")
             else:
                 logger.warning(f"Image tag not found in Artifactory: {tag}")
-                return {"image_tag_not_found": True, "message": f"Image tag {tag} not found in Artifactory."} #added
+                return {"image_tag_not_found": True, "message": f"Image tag {tag} not found in Artifactory."}
         except requests.exceptions.RequestException as e:
             logger.error(f"Error deleting image tag: {e}")
             raise HTTPException(status_code=500, detail=f"Error deleting image tag: {e}")
 
     else:
         logger.warning(f"Manifest list not found, skipping delete tag {tag}")
-        return {"manifest_list_not_found": True, "message": f"Manifest list not found for tag {tag}."} #added
+        return {"manifest_list_not_found": True, "message": f"Manifest list not found for tag {tag}."}
         
 
-def get_pods(client, namespace) -> List[Dict[str, Any]]: #added type hints
+def get_pods(client, namespace) -> List[Dict[str, Any]]:
     try:
         pods = client.resources.get(api_version='v1', kind='Pod').get(namespace=namespace).items
         if not pods:
             logger.warning(f"No pods found in namespace {namespace}.")
-            return []  # Return an empty list, and handle in main function
+            return []
         return pods
     except Exception as e:
         logger.error(f"Error retrieving pods: {e}")
@@ -74,12 +74,12 @@ def remove_pod(client, namespace, pod_name):
         logger.error(f"Error removing pod: {e}")
         raise HTTPException(status_code=500, detail=f"Error removing pod: {e}")
 
-def get_deployment_configs(client, namespace) -> List[Dict[str, Any]]: #added type hints
+def get_deployment_configs(client, namespace) -> List[Dict[str, Any]]:
     try:
         deployment_configs = client.resources.get(api_version='apps.openshift.io/v1', kind='DeploymentConfig').get(namespace=namespace).items
         if not deployment_configs:
             logger.warning(f"No deployment configs found in namespace {namespace}.")
-            return [] # Return empty list and handle in main
+            return []
         return deployment_configs
     except Exception as e:
         logger.error(f"Error retrieving deployment configs: {e}")
@@ -93,21 +93,21 @@ def remove_deployment_config(client, namespace, deployment_config_name):
         logger.error(f"Error removing deployment config: {e}")
         raise HTTPException(status_code=500, detail=f"Error removing deployment config: {e}")
 
-def get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag=None) -> Dict[str, Optional[datetime.datetime]]: #added type hints
+def get_image_digests_with_creation_dates(registry_url, image_name, registry_token, tag_name: Optional[str] = None) -> Dict[str, Optional[datetime.datetime]]:
     try:
         registry_api_url = f"https://{registry_url}/v2/{image_name}/tags/list"
         headers = {"Authorization": f"Bearer {registry_token}"}
         response = requests.get(registry_api_url, headers=headers, verify=False)
         response.raise_for_status()
         tags_list = response.json().get("tags", [])
-        if specific_tag and specific_tag not in tags_list:
-            logger.warning(f"Image with tag {specific_tag} not found.")
+        if tag_name and tag_name not in tags_list:
+            logger.warning(f"Image with tag {tag_name} not found.")
             return {}
 
         image_digests_with_dates = {}
         image_found = False
         for tag in tags_list:
-            if specific_tag and tag != specific_tag:
+            if tag_name and tag != tag_name:
                 continue
 
             manifest_api_url = f"https://{registry_url}/v2/{image_name}/manifests/{tag}"
@@ -126,8 +126,8 @@ def get_image_digests_with_creation_dates(registry_url, image_name, registry_tok
                 logger.warning(f"Image config or digest not found in manifest for {image_name}:{tag}")
         
         if not image_found:
-            logger.warning(f"No images found for {image_name} with tag {specific_tag}.")
-            return {} #important
+            logger.warning(f"No images found for {image_name} with tag {tag_name}.")
+            return {}
 
         return image_digests_with_dates
 
@@ -167,55 +167,66 @@ def get_image_creation_date(registry_url, image_name, tag, registry_token):
 
 
 @app.post("/clean-registry/")
-def clean_registry(specific_tag: str = None, delete_operation: bool = False):
+def clean_registry(
+    repository_url: str = Query(..., description="URL of the image repository (e.g., 'myregistry.com')", default="myregistry.com"),
+    image_name: str = Query(..., description="Name of the image to clean (e.g., 'my-app/my-image')", default="my-app/my-image"),
+    tag_name: Optional[str] = Query(None, description="Optional tag name to clean"),
+    remove_older_than: int = Query(30, description="Remove images older than this many days", default=30),
+    keep_tags: List[str] = Query([], description="List of tags to keep (e.g., ['latest', 'stable'])", default=[]),
+    keep_most_recent: bool = Query(False, description="Keep the most recent image", default=False),
+    filter_namespace: Optional[str] = Query(None, description="Filter resources by namespace"),
+    delete_operation: bool = Query(False, description="Enable deletion of images, pods, and deployment configs", default=False),
+):
     namespace = get_namespace()
     config_map_name = os.getenv("CONFIGMAP_NAME", "registry-cleaner-config")
     secret_name = os.getenv("SECRET_NAME", "registry-cleaner-secret")
 
-    logger.info(f"Starting registry cleaning process. Specific tag: {specific_tag}, Delete operation: {delete_operation}")
+    logger.info(f"Starting registry cleaning process. Tag name: {tag_name}, Delete operation: {delete_operation}")
 
     config_data = load_config_from_configmap(namespace, config_map_name)
     secret_data = load_secrets_from_secret(namespace, secret_name)
 
-    registry_url = config_data.get("registry_url")
-    image_name = config_data.get("image_name")
-    retention = config_data.get("retention", int(config_data.get("retention", 30)))
-    skip_tags = [tag.strip() for tag in config_data.get("skip_tags", "").split(",") if tag.strip()]
-    delete_deployments = config_data.get("delete_deployments", "false").lower() == "true"
-    filter_namespace = config_data.get("filter_namespace")
+    registry_url = config_data.get("registry_url") # still get from config
+    image_name_config = config_data.get("image_name") # still get from config
+    retention = config_data.get("retention", int(config_data.get("retention", 30))) # still get from config
+    skip_tags = [tag.strip() for tag in config_data.get("skip_tags", "").split(",") if tag.strip()] # still get from config
+    delete_deployments = config_data.get("delete_deployments", "false").lower() == "true" # still get from config
+    filter_namespace_config = config_data.get("filter_namespace") # still get from config
+
 
     client = get_openshift_client()
     registry_token = get_registry_token(registry_url)
 
-    image_identifiers_with_dates = get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag)
+    image_identifiers_with_dates = get_image_digests_with_creation_dates(repository_url, image_name, registry_token, tag_name)
 
     stale_images = {}
-    cutoff_date = datetime.datetime.now(tz.UTC) - datetime.timedelta(days=retention)
+    cutoff_date = datetime.datetime.now(tz.UTC) - datetime.timedelta(days=remove_older_than)
 
     sorted_images = sorted(image_identifiers_with_dates.items(), key=lambda item: item[1], reverse=True)
 
     keep_images = []
-    for image_identifier, creation_date in sorted_images:
-        if creation_date is not None:
-            keep_images.append(image_identifier)
-    if len(keep_images) > 0:
-        keep_images = [keep_images[0]]
+    if keep_most_recent:
+        for image_identifier, creation_date in sorted_images:
+            if creation_date is not None:
+                keep_images.append(image_identifier)
+        if len(keep_images) > 0:
+            keep_images = [keep_images[0]]
 
     for image_identifier, creation_date in image_identifiers_with_dates.items():
         tag = None
-        for image_tag, image_creation_date in get_image_digests_with_creation_dates(registry_url, image_name, registry_token, specific_tag).items():
+        for image_tag, image_creation_date in get_image_digests_with_creation_dates(repository_url, image_name, registry_token, tag_name).items():
             if image_creation_date == creation_date:
                 tag = image_tag
                 break
 
         if creation_date is None:
             continue
-        if creation_date < cutoff_date and image_identifier not in keep_images and tag not in skip_tags:
+        if creation_date < cutoff_date and image_identifier not in keep_images and tag not in keep_tags:
             stale_images[image_identifier] = tag
 
     image_table = []
     for image_identifier, tag in stale_images.items():
-        image_table.append([f"{registry_url}/{image_name}:{tag}", tag])
+        image_table.append([f"{repository_url}/{image_name}:{tag}", tag])
 
     deployment_configs_to_delete = []
     pods_to_delete = []
@@ -239,7 +250,7 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                 for container in containers:
                     image = container.image
                     for image_identifier, tag in stale_images.items():
-                        if f"{registry_url}/{image_name}:{tag}" in image:
+                        if f"{repository_url}/{image_name}:{tag}" in image:
                             deployment_configs_to_delete.append([deployment_config_namespace, deployment_config_name])
 
         pods = get_pods(client, namespace)
@@ -259,7 +270,7 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                 for container in containers:
                     image = container.image
                     for image_identifier, tag in stale_images.items():
-                        if f"{registry_url}/{image_name}:{tag}" in image:
+                        if f"{repository_url}/{image_name}:{tag}" in image:
                             pods_to_delete.append([pod_namespace, pod_name])
 
         if delete_operation:
@@ -268,16 +279,16 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
             deleted_pods = []
 
             for image_identifier, tag in stale_images.items():
-                results = execute_artifactory_aql_query_manifest_list(f"https://{registry_url}", image_name.split('/')[0], '/'.join(image_name.split('/')[1:]), tag, registry_token)
+                results = execute_artifactory_aql_query_manifest_list(f"https://{repository_url}", image_name.split('/')[0], '/'.join(image_name.split('/')[1:]), tag, registry_token)
                 if results:
-                    remove_image_tag_manifest(registry_url, image_name, tag, registry_token)
-                    deleted_images.append([f"{registry_url}/{image_name}:{tag}", tag])
-                    logger.info(f"Deleted image {registry_url}/{image_name}:{tag}")
+                    remove_image_tag_manifest(repository_url, image_name, tag, registry_token)
+                    deleted_images.append([f"{repository_url}/{image_name}:{tag}", tag])
+                    logger.info(f"Deleted image {repository_url}/{image_name}:{tag}")
                 else:
-                    log_message = f"Image {registry_url}/{image_name}:{tag} does not exist. Skipping deletion."
+                    log_message = f"Image {repository_url}/{image_name}:{tag} does not exist. Skipping deletion."
                     logger.warning(log_message)
                     return {
-                        "image_not_found": True,  # Add to the response
+                        "image_not_found": True,
                         "image_not_found_message": log_message
                     }
 
@@ -294,7 +305,7 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                             "deployment_config_not_found_message": log_message
                         }
                     else:
-                        raise  # Re-raise the exception if it's not a "Not Found" error
+                        raise
 
             for item in pods_to_delete:
                 if isinstance(item, (tuple, list)) and len(item) == 2:
@@ -312,7 +323,7 @@ def clean_registry(specific_tag: str = None, delete_operation: bool = False):
                                 "pod_not_found_message": log_message
                             }
                         else:
-                            raise  # Re-raise the exception if it's not a "Not Found" error
+                            raise
                 else:
                     logger.warning(f"Invalid item in pods_to_delete: {item}")
 
