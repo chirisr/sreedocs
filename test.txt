@@ -145,6 +145,128 @@ def get_registry_token(registry_url: str) -> str:
         logger.error(f"Error getting registry token: {e}")
         raise  # Re-raise to be caught by FastAPI
 
+def get_image_digests_with_creation_dates(
+    registry_url: str,
+    image_name: str,
+    registry_token: str,
+    skip_tags: List[str],
+    tag_name: Optional[str] = None,
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    Retrieves image digests and their creation dates from the registry.
+
+    Args:
+        registry_url (str): The URL of the container registry.
+        image_name (str): The name of the image.
+        registry_token (str): The authentication token for the registry.
+        skip_tags (List[str]): A list of tags to skip.
+        tag_name (Optional[str], optional): The tag name. Defaults to None.
+
+    Returns:
+        Dict[str, Optional[datetime.datetime]]: A dictionary where keys are image tags
+                                                and values are dictionaries containing creation dates and image identifiers.
+    """
+    logger.info(
+        f"Getting image digests with creation dates for {image_name}:{tag_name} from {registry_url}"
+    )
+    try:
+        registry_api_url = f"https://{registry_url}/v2/{image_name}/tags/list"
+        headers = {"Authorization": f"Bearer {registry_token}"}
+        response = requests.get(registry_api_url, headers=headers, verify=False)
+        response.raise_for_status()
+        tags_list = response.json().get("tags", [])
+        if tag_name :
+            if "," in tag_name:
+                split_tags = tag_name.split(",")
+                for tag in split_tags:
+                  if tag not in tags_list:
+                    logger.warning(f"Image with tag {tag} not found.")
+                    return {}
+            elif tag_name not in tags_list:
+                logger.warning(f"Image with tag {tag_name} not found.")
+                return {}
+
+        tags_with_data = {}
+        image_found = False
+
+        # Check the type of skip_tags. If it's a string, split it into a list.
+        logger.info(f"Initial type of skip_tags: {type(skip_tags)}")
+        if isinstance(skip_tags, str):
+            logger.info(f"skip_tags is a string, splitting it: {skip_tags}")
+            skip_tags = skip_tags.split(",")  # Split the string into a list
+            logger.info(f"After splitting, skip_tags: {skip_tags}")
+        elif isinstance(skip_tags, list) and len(skip_tags) > 1:
+            logger.info(f"skip_tags is a list. Checking for comma-separated values...")
+            new_skip_tags = []
+            for item in skip_tags:
+                if isinstance(item, str) and "," in item:
+                    logger.info(f"Found comma-separated string: {item}")
+                    new_skip_tags.extend(item.split(","))
+                else:
+                    new_skip_tags.append(item)
+            skip_tags = new_skip_tags
+            logger.info(f"skip_tags after processing: {skip_tags}")
+        else:
+            logger.info(
+                f"skip_tags is not a string or list with more than one element: {skip_tags}"
+            )
+
+        for tag in tags_list:
+            if tag_name:
+                if "," in tag_name:
+                  if tag not in tag_name.split(","):
+                    continue
+                elif tag != tag_name:
+                    continue
+            if tag in skip_tags:
+                logger.info(
+                    f"Skipping tag {tag} as it is in the skip list.  tag: {tag}, skip_tags: {skip_tags}"
+                )
+                continue
+
+            manifest_api_url = f"https://{registry_url}/v2/{image_name}/manifests/{tag}"
+            manifest_response = requests.get(
+                manifest_api_url,
+                headers={
+                    "Accept": "application/vnd.docker.distribution.manifest.v2+json",
+                    "Authorization": f"Bearer {registry_token}",
+                },
+                verify=False,
+            )
+            manifest_response.raise_for_status()
+            manifest = manifest_response.json()
+            if "config" in manifest and "digest" in manifest["config"]:
+                image_identifier = manifest["config"]["digest"]
+                creation_date = get_image_creation_date(
+                    registry_url, image_name, tag, registry_token
+                )
+                if creation_date:
+                    tags_with_data[tag] = {
+                        "image_identifier": f"{image_name}:{tag}",
+                        "creation_date": creation_date,
+                    }
+                    image_found = True
+                else:
+                    logger.warning(
+                        f"Failed to retrieve creation date for image: {image_name}:{tag}"
+                    )
+            else:
+                logger.warning(
+                    f"Image config or digest not found in manifest for {image_name}:{tag}"
+                )
+
+        if not image_found:
+            logger.warning(f"No images found for {image_name} with tag {tag_name}.")
+            return {}
+
+        return tags_with_data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error retrieving image digests and creation dates: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving image digests and creation dates: {e}",
+        )
 
 def get_image_creation_date(
     registry_url: str, image_name: str, tag_name: str, registry_token: str
