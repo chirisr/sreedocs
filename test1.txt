@@ -1,50 +1,60 @@
-import requests
-import json
+Integrating PinSSO with Sourcegraph would likely involve configuring Sourcegraph to use PinSSO as an external authentication provider. Based on Sourcegraph's documentation, here are the general methods Sourcegraph supports for user authentication and the information you would likely need from PinSSO to integrate it:
 
-# Artifactory details
-ARTIFACTORY_URL = "https://{artifactory-domain}/artifactory"
-REPO_KEY = "{repo-key}"
-IMAGE_NAME = "{image-name}"
-TAG = "{tag}"
-USERNAME = "{username}"
-PASSWORD = "{password}"
+Supported Authentication Methods in Sourcegraph:
 
-def get_image_info():
-    # Construct the URL to fetch manifest.json properties
-    manifest_url = f"{ARTIFACTORY_URL}/api/storage/{REPO_KEY}/{IMAGE_NAME}/{TAG}/manifest.json?properties"
-    
-    # Make the GET request
-    response = requests.get(manifest_url, auth=(USERNAME, PASSWORD))
-    response.raise_for_status()
-    
-    # Parse the JSON response
-    data = response.json()
-    properties = data.get('properties', {})
-    
-    # Extract relevant information
-    digest = properties.get('docker.manifest.digest', [''])[0]
-    total_size = properties.get('docker.size', ['0'])[0]
-    label_count = properties.get('docker.label.count', ['0'])[0]
-    
-    # Fetch labels if label_count > 0
-    labels = {}
-    if int(label_count) > 0:
-        for key, value in properties.items():
-            if key.startswith('docker.label.'):
-                label_key = key.replace('docker.label.', '')
-                labels[label_key] = value[0]
-    
-    # Compile the info
-    image_info = {
-        "Title": TAG,
-        "Digest": digest,
-        "Total Size": total_size,
-        "Label Count": label_count,
-        "Labels": labels
-    }
-    
-    return image_info
+SAML (Security Assertion Markup Language): If PinSSO supports SAML, this is a standard way to integrate Single Sign-On.
+OpenID Connect (OIDC): If PinSSO acts as an OIDC provider, Sourcegraph can be configured to authenticate users via OIDC.
+HTTP Authentication Proxies: If you can place an authentication proxy (like oauth2_proxy or Google IAP) in front of Sourcegraph that authenticates against PinSSO and sets HTTP headers with user information, Sourcegraph can use the http-header authentication provider.
+GitHub/GitLab/Bitbucket Cloud OAuth: If PinSSO federates with these platforms, you might be able to leverage their OAuth mechanisms, though this is less direct.
+Information Required from PinSSO for Integration:
 
-if __name__ == "__main__":
-    info = get_image_info()
-    print(json.dumps(info, indent=4))
+The specific information needed will depend on the authentication method you choose:
+
+For SAML:
+
+SAML Metadata URL or XML: This file or URL contains the configuration details of the PinSSO identity provider.
+Entity ID: A unique identifier for the PinSSO instance.
+Single Sign-On URL: The URL where Sourcegraph should send authentication requests.
+Public Certificates: The certificates used by PinSSO to sign its responses.
+Attribute Mapping: You'll need to configure how user attributes (like username, email, display name) from the SAML assertion map to Sourcegraph user fields.
+For OpenID Connect:
+
+Client ID: The identifier for the Sourcegraph application registered in PinSSO.
+Client Secret: A secret key used by Sourcegraph to authenticate with PinSSO.
+Issuer URL: The base URL of the PinSSO OIDC provider. Sourcegraph will discover the necessary endpoints (authorization, token, JWKS) from this URL.
+Authorization Endpoint URL (if not discoverable): The URL where Sourcegraph redirects users for login.
+Token Endpoint URL (if not discoverable): The URL Sourcegraph uses to exchange the authorization code for an access token and ID token.
+Userinfo Endpoint URL (if you need additional user details): The URL Sourcegraph uses to retrieve user information.
+Scope: The OIDC scopes to request during authorization (e.g., openid, email, profile).
+Claim Mapping: You'll need to configure how the claims in the ID token map to Sourcegraph user fields.
+For HTTP Authentication Proxy:
+
+Header Name for Username: The HTTP header that the proxy sets containing the authenticated username.
+Header Name for Email (optional but recommended): The HTTP header containing the user's email address.
+General Steps for Integration (Conceptual):
+
+Configure PinSSO:
+
+Register Sourcegraph as an application (Service Provider or Client) in your PinSSO instance.
+Obtain the necessary configuration details (metadata URL, client ID/secret, URLs, certificates, etc.) based on the chosen authentication method.
+Configure attribute/claim mapping in PinSSO to release relevant user information to Sourcegraph.
+Configure Sourcegraph:
+
+Access the Sourcegraph site configuration (usually via the Admin UI or sg config set).
+Choose the appropriate authentication provider type (saml, oidc, or http-header).
+Provide the configuration details obtained from PinSSO in the Sourcegraph site configuration. This will involve settings like saml.metadataURL, oidc.clientID, oidc.clientSecret, http-header.usernameHeader, etc.
+You might need to configure how Sourcegraph handles user creation and updates based on the information received from PinSSO.
+Test the Integration:
+
+Attempt to log in to Sourcegraph. You should be redirected to PinSSO for authentication.
+After successful authentication on PinSSO, you should be redirected back to Sourcegraph and logged in.
+Verify that user information (username, email, etc.) is correctly provisioned in Sourcegraph.
+To get the exact steps and configuration details:
+
+Consult Sourcegraph's Official Documentation on User Authentication (SSO): Refer to the most up-to-date documentation on the Sourcegraph website for detailed instructions on configuring SAML, OpenID Connect, and HTTP header authentication.
+Review PinSSO's Documentation: Look for documentation on how to configure SAML or OpenID Connect integrations with third-party applications.
+Consider your specific PinSSO setup: The exact configuration might vary depending on your PinSSO version and how it's managed.
+By understanding the authentication methods Sourcegraph supports and the configuration details required by each, you can work towards successfully integrating PinSSO with your Sourcegraph instance. Remember to prioritize SAML or OpenID Connect if PinSSO offers these standard protocols.
+
+referance
+https://docs-legacy.sourcegraph.com/@v3.39.1/admin/auth
