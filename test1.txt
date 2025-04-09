@@ -1,60 +1,99 @@
-Integrating PinSSO with Sourcegraph would likely involve configuring Sourcegraph to use PinSSO as an external authentication provider. Based on Sourcegraph's documentation, here are the general methods Sourcegraph supports for user authentication and the information you would likely need from PinSSO to integrate it:
+What is SAML (Security Assertion Markup Language)?
+Protocol: XML-based
 
-Supported Authentication Methods in Sourcegraph:
+Use case: Legacy or enterprise SSO
 
-SAML (Security Assertion Markup Language): If PinSSO supports SAML, this is a standard way to integrate Single Sign-On.
-OpenID Connect (OIDC): If PinSSO acts as an OIDC provider, Sourcegraph can be configured to authenticate users via OIDC.
-HTTP Authentication Proxies: If you can place an authentication proxy (like oauth2_proxy or Google IAP) in front of Sourcegraph that authenticates against PinSSO and sets HTTP headers with user information, Sourcegraph can use the http-header authentication provider.
-GitHub/GitLab/Bitbucket Cloud OAuth: If PinSSO federates with these platforms, you might be able to leverage their OAuth mechanisms, though this is less direct.
-Information Required from PinSSO for Integration:
+Flow: Browser is redirected to Identity Provider (IdP), user logs in, and is redirected back with a signed assertion.
 
-The specific information needed will depend on the authentication method you choose:
+Popular IdPs: PingFederate, ADFS, Okta, Azure AD, OneLogin
 
-For SAML:
+Attributes: Often passes email, name, roles, etc.
 
-SAML Metadata URL or XML: This file or URL contains the configuration details of the PinSSO identity provider.
-Entity ID: A unique identifier for the PinSSO instance.
-Single Sign-On URL: The URL where Sourcegraph should send authentication requests.
-Public Certificates: The certificates used by PinSSO to sign its responses.
-Attribute Mapping: You'll need to configure how user attributes (like username, email, display name) from the SAML assertion map to Sourcegraph user fields.
-For OpenID Connect:
+Pros:
 
-Client ID: The identifier for the Sourcegraph application registered in PinSSO.
-Client Secret: A secret key used by Sourcegraph to authenticate with PinSSO.
-Issuer URL: The base URL of the PinSSO OIDC provider. Sourcegraph will discover the necessary endpoints (authorization, token, JWKS) from this URL.
-Authorization Endpoint URL (if not discoverable): The URL where Sourcegraph redirects users for login.
-Token Endpoint URL (if not discoverable): The URL Sourcegraph uses to exchange the authorization code for an access token and ID token.
-Userinfo Endpoint URL (if you need additional user details): The URL Sourcegraph uses to retrieve user information.
-Scope: The OIDC scopes to request during authorization (e.g., openid, email, profile).
-Claim Mapping: You'll need to configure how the claims in the ID token map to Sourcegraph user fields.
-For HTTP Authentication Proxy:
+Widely supported in enterprise environments
 
-Header Name for Username: The HTTP header that the proxy sets containing the authenticated username.
-Header Name for Email (optional but recommended): The HTTP header containing the user's email address.
-General Steps for Integration (Conceptual):
+Strong integration with traditional IdPs like PingFederate
 
-Configure PinSSO:
+Mature and secure
 
-Register Sourcegraph as an application (Service Provider or Client) in your PinSSO instance.
-Obtain the necessary configuration details (metadata URL, client ID/secret, URLs, certificates, etc.) based on the chosen authentication method.
-Configure attribute/claim mapping in PinSSO to release relevant user information to Sourcegraph.
-Configure Sourcegraph:
+Cons:
 
-Access the Sourcegraph site configuration (usually via the Admin UI or sg config set).
-Choose the appropriate authentication provider type (saml, oidc, or http-header).
-Provide the configuration details obtained from PinSSO in the Sourcegraph site configuration. This will involve settings like saml.metadataURL, oidc.clientID, oidc.clientSecret, http-header.usernameHeader, etc.
-You might need to configure how Sourcegraph handles user creation and updates based on the information received from PinSSO.
-Test the Integration:
+XML-based and harder to debug
 
-Attempt to log in to Sourcegraph. You should be redirected to PinSSO for authentication.
-After successful authentication on PinSSO, you should be redirected back to Sourcegraph and logged in.
-Verify that user information (username, email, etc.) is correctly provisioned in Sourcegraph.
-To get the exact steps and configuration details:
+Browser-based (no native mobile support)
 
-Consult Sourcegraph's Official Documentation on User Authentication (SSO): Refer to the most up-to-date documentation on the Sourcegraph website for detailed instructions on configuring SAML, OpenID Connect, and HTTP header authentication.
-Review PinSSO's Documentation: Look for documentation on how to configure SAML or OpenID Connect integrations with third-party applications.
-Consider your specific PinSSO setup: The exact configuration might vary depending on your PinSSO version and how it's managed.
-By understanding the authentication methods Sourcegraph supports and the configuration details required by each, you can work towards successfully integrating PinSSO with your Sourcegraph instance. Remember to prioritize SAML or OpenID Connect if PinSSO offers these standard protocols.
+🪪 What is OpenID Connect (OIDC)?
+Protocol: Modern OAuth 2.0 + JSON-based authentication layer
 
-referance
-https://docs-legacy.sourcegraph.com/@v3.39.1/admin/auth
+Use case: Cloud-native SSO, mobile, and modern web apps
+
+Flow: Redirects with token exchange via OAuth
+
+Popular IdPs: Azure AD, Google, Okta, Auth0
+
+Pros:
+
+JSON-based (easier to handle)
+
+Better support for APIs and SPAs
+
+Works with mobile apps and modern web tech
+
+Simpler integration in many cases
+
+Cons:
+
+Slightly newer, not all enterprise IdPs support it fully
+
+What is HTTP Authentication Proxy?
+Mechanism: You put a reverse proxy (e.g., NGINX, Envoy) in front of Sourcegraph that handles authentication.
+
+Example: Sourcegraph reads the user identity from a custom HTTP header (like X-Forwarded-User) set by your proxy.
+
+Pros:
+
+Simple if you already have a proxy (e.g., with LDAP or Kerberos)
+
+Offloads authentication entirely from Sourcegraph
+
+Cons:
+
+Can be insecure if not configured correctly (must restrict headers)
+
+Less flexible than SAML/OIDC
+
+Harder to scale securely
+
+Which Should You Choose for SSO with Sourcegraph?
+Feature	SAML	OIDC	HTTP Auth Proxy
+Modern, easy to integrate	XML	JSON Custom setup
+Mobile/API support	No	Yes	No
+Enterprise compatibility	Yes	Mostly	⚠Depends
+PingSSO (PingFederate)	Preferred	Only if supported	Not typical
+Recommended for Sourcegraph	Yes (for PingSSO)	Yes (modern IdPs)	Only if required
+
+Recommendation (based on using PingSSO)
+Use SAML if:
+
+You are using PingFederate or PingOne as your IdP
+
+You need enterprise-grade SSO and you're okay with the XML complexity
+
+You want to use Sourcegraph’s native support for SAML-based auth
+
+Use OIDC if:
+
+Your IdP supports OIDC (e.g., Azure AD, Okta)
+
+You prefer a simpler, modern setup
+
+You may expand to mobile apps, APIs, or other OAuth-based tools
+
+Use HTTP Proxy if:
+
+You already have an enterprise auth proxy in place (e.g., NGINX+Kerberos)
+
+You don’t want Sourcegraph to handle auth directly
+
+Let me know if you want help with choosing based on your infra or want a config sample for one of these options.
