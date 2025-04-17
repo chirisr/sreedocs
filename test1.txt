@@ -1,99 +1,95 @@
-What is SAML (Security Assertion Markup Language)?
-Protocol: XML-based
+Convert your JKS certificate to PEM format: OpenShift Routes with Edge TLS termination require the certificate and private key to be in PEM format. You'll need to use the keytool and openssl commands to perform this conversion.
 
-Use case: Legacy or enterprise SSO
+Step 1: Export from JKS to PKCS12 (.p12 or .pfx):
 
-Flow: Browser is redirected to Identity Provider (IdP), user logs in, and is redirected back with a signed assertion.
+Open a command prompt or PowerShell on your Windows machine (where you likely have the JKS file).
 
-Popular IdPs: PingFederate, ADFS, Okta, Azure AD, OneLogin
+Bash
 
-Attributes: Often passes email, name, roles, etc.
+"C:\Program Files\Java\jdk-XX\bin\keytool" -importkeystore -srckeystore yourkeystore.jks -destkeystore output.p12 -deststoretype PKCS12
+Replace "C:\Program Files\Java\jdk-XX\bin\keytool" with the actual path to your keytool.exe.
+Replace yourkeystore.jks with the name of your JKS file.
+You will be prompted for the JKS keystore password.
+You will then be asked to create a password for the output.p12 file.
+Step 2: Convert PKCS12 to PEM:
 
-Pros:
+Ensure you have OpenSSL installed on your Windows machine.
 
-Widely supported in enterprise environments
+Extract Certificate (certificate.pem):
 
-Strong integration with traditional IdPs like PingFederate
+Bash
 
-Mature and secure
+openssl pkcs12 -in output.p12 -clcerts -nokeys -out certificate.pem
+You will be prompted for the password of the output.p12 file.
 
-Cons:
+Extract Private Key (private.key):
 
-XML-based and harder to debug
+Bash
 
-Browser-based (no native mobile support)
+openssl pkcs12 -in output.p12 -nocerts -out private.key
+You will be prompted for the password of the output.p12 file. You might also be asked to set a passphrase for the private key (you can leave it blank if you prefer no passphrase).
 
-🪪 What is OpenID Connect (OIDC)?
-Protocol: Modern OAuth 2.0 + JSON-based authentication layer
+Create an OpenShift Secret containing the PEM certificate and key: This is the recommended way to securely manage your TLS credentials in OpenShift.
 
-Use case: Cloud-native SSO, mobile, and modern web apps
+Open your OpenShift CLI and navigate to your Sourcegraph project:
 
-Flow: Redirects with token exchange via OAuth
+Bash
 
-Popular IdPs: Azure AD, Google, Okta, Auth0
+oc project <your-sourcegraph-project-name>
+Then, create the secret:
 
-Pros:
+Bash
 
-JSON-based (easier to handle)
+oc create secret tls sourcegraph-tls-cert --cert=certificate.pem --key=private.key
+Replace <your-sourcegraph-project-name> with the actual name of your Sourcegraph project.
+Ensure that certificate.pem and private.key are in the directory where you run this command.
+Configure the OpenShift Route for Sourcegraph to use the TLS Secret:
 
-Better support for APIs and SPAs
+You'll need to edit the OpenShift Route that exposes your Sourcegraph instance.
 
-Works with mobile apps and modern web tech
+Using the OpenShift Web Console (UI):
 
-Simpler integration in many cases
+Navigate to your Sourcegraph project.
+Go to Networking -> Routes.
+Find the Route for your Sourcegraph instance and click Edit Route.
+Under TLS Settings:
+Choose "Secure route".
+For Termination, select "Edge".
+Under "TLS Certificate Source", select "Secret".
+From the "Secret name" dropdown, choose the secret you created in the previous step (sourcegraph-tls-cert).
+(Optional) Configure "Insecure Traffic" as needed (e.g., "Redirect" to HTTPS).
+Click Save.
+Using the oc Command-Line Interface (CLI):
 
-Cons:
+Edit your Sourcegraph Route:
 
-Slightly newer, not all enterprise IdPs support it fully
+Bash
 
-What is HTTP Authentication Proxy?
-Mechanism: You put a reverse proxy (e.g., NGINX, Envoy) in front of Sourcegraph that handles authentication.
+oc edit route <your-sourcegraph-route-name> -n <your-sourcegraph-project-name>
+Modify the spec.tls section of the Route definition to look like this:
 
-Example: Sourcegraph reads the user identity from a custom HTTP header (like X-Forwarded-User) set by your proxy.
+YAML
 
-Pros:
+spec:
+  # ... other route configuration ...
+  tls:
+    termination: edge
+    secretName: sourcegraph-tls-cert
+  # ... other route configuration ...
+Replace <your-sourcegraph-route-name> with the actual name of your Sourcegraph Route.
 
-Simple if you already have a proxy (e.g., with LDAP or Kerberos)
+Save the changes to the YAML file.
 
-Offloads authentication entirely from Sourcegraph
+Verify the Configuration:
 
-Cons:
+Open your Sourcegraph URL in a web browser (using https://).
+Your browser should now recognize the certificate you provided. Check the certificate details in your browser to confirm it's the correct one.
+If you configured "Redirect" for insecure traffic, accessing the HTTP version of your Sourcegraph URL should automatically redirect to HTTPS.
+Important Considerations:
 
-Can be insecure if not configured correctly (must restrict headers)
-
-Less flexible than SAML/OIDC
-
-Harder to scale securely
-
-Which Should You Choose for SSO with Sourcegraph?
-Feature	SAML	OIDC	HTTP Auth Proxy
-Modern, easy to integrate	XML	JSON Custom setup
-Mobile/API support	No	Yes	No
-Enterprise compatibility	Yes	Mostly	⚠Depends
-PingSSO (PingFederate)	Preferred	Only if supported	Not typical
-Recommended for Sourcegraph	Yes (for PingSSO)	Yes (modern IdPs)	Only if required
-
-Recommendation (based on using PingSSO)
-Use SAML if:
-
-You are using PingFederate or PingOne as your IdP
-
-You need enterprise-grade SSO and you're okay with the XML complexity
-
-You want to use Sourcegraph’s native support for SAML-based auth
-
-Use OIDC if:
-
-Your IdP supports OIDC (e.g., Azure AD, Okta)
-
-You prefer a simpler, modern setup
-
-You may expand to mobile apps, APIs, or other OAuth-based tools
-
-Use HTTP Proxy if:
-
-You already have an enterprise auth proxy in place (e.g., NGINX+Kerberos)
-
-You don’t want Sourcegraph to handle auth directly
-
-Let me know if you want help with choosing based on your infra or want a config sample for one of these options.
+Certificate Validity: Ensure your certificate is valid and not expired.
+Hostname Matching: The "Common Name" (CN) or Subject Alternative Names (SANs) in your certificate must match the hostname you've configured for your OpenShift Route.
+Intermediate Certificates: If your certificate was issued by an intermediate Certificate Authority (CA), you might need to include the CA certificate chain in the certificate.pem file (usually by concatenating the server certificate and the intermediate CA certificates in the correct order).
+Private Key Security: Store your private key securely and ensure that only the OpenShift Router has access to it through the Secret.
+Route Hostname: Make sure the host field in your OpenShift Route is set to the external hostname you want to use for Sourcegraph (the one that matches your certificate).
+By following these steps, you should be able to successfully install your JKS certificate for your Sourcegraph deployment on OpenShift using Edge TLS termination. The OpenShift Router will handle the HTTPS connections using your certificate.
