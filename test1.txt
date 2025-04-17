@@ -49,47 +49,34 @@ You'll need to edit the OpenShift Route that exposes your Sourcegraph instance.
 
 Using the OpenShift Web Console (UI):
 
-Navigate to your Sourcegraph project.
-Go to Networking -> Routes.
-Find the Route for your Sourcegraph instance and click Edit Route.
-Under TLS Settings:
-Choose "Secure route".
-For Termination, select "Edge".
-Under "TLS Certificate Source", select "Secret".
-From the "Secret name" dropdown, choose the secret you created in the previous step (sourcegraph-tls-cert).
-(Optional) Configure "Insecure Traffic" as needed (e.g., "Redirect" to HTTPS).
-Click Save.
-Using the oc Command-Line Interface (CLI):
+Using the OpenShift Web Console (UI):
 
-Edit your Sourcegraph Route:
-
-Bash
-
-oc edit route <your-sourcegraph-route-name> -n <your-sourcegraph-project-name>
-Modify the spec.tls section of the Route definition to look like this:
-
-YAML
-
-spec:
-  # ... other route configuration ...
-  tls:
-    termination: edge
-    secretName: sourcegraph-tls-cert
-  # ... other route configuration ...
-Replace <your-sourcegraph-route-name> with the actual name of your Sourcegraph Route.
-
-Save the changes to the YAML file.
+Navigate to your Project: Go to your project in the OpenShift web console.
+Go to Networking -> Routes: In the left-hand navigation menu, click on "Networking" and then "Routes".
+Click "Create Route": In the top right corner, click the "Create Route" button.
+Configure Basic Route Details:
+Name: Enter a name for your route (e.g., my-secure-app).
+Hostname: Enter the external hostname you want to use to access your application (e.g., myapp.example.com).
+Path (Optional): If you want to expose your application under a specific path, enter it here (e.g., /).
+Service: Select the name of the OpenShift Service that exposes your application.
+Target Port: Specify the port that your service is listening on (e.g., 8080).
+Configure TLS Settings:
+Under the "TLS Settings" section, choose "Secure route".
+Termination: Select "Edge".
+Certificate: Open your combined.pem file with a text editor. Copy the entire content, including the -----BEGIN CERTIFICATE----- and -----END CERTIFICATE----- markers, and paste it into this field.
+Private Key: In the same combined.pem file, find the section enclosed by -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- markers. Copy the entire content of that section and paste it into this field.
+CA Certificate (Optional): If your certificate was issued by an intermediate CA, and if your combined.pem file contains those intermediate certificates, you may need to specify them here. If not, you may have a separate cacert.pem file.
+Insecure Traffic (Optional): Choose how to handle insecure (HTTP) traffic (e.g., "Allow", "Redirect", "Disable").
+Click "Create": Once you have filled in all the necessary details, click the "Create" button.
 
 Verify the Configuration:
 
 Open your Sourcegraph URL in a web browser (using https://).
 Your browser should now recognize the certificate you provided. Check the certificate details in your browser to confirm it's the correct one.
 If you configured "Redirect" for insecure traffic, accessing the HTTP version of your Sourcegraph URL should automatically redirect to HTTPS.
-Important Considerations:
 
-Certificate Validity: Ensure your certificate is valid and not expired.
-Hostname Matching: The "Common Name" (CN) or Subject Alternative Names (SANs) in your certificate must match the hostname you've configured for your OpenShift Route.
-Intermediate Certificates: If your certificate was issued by an intermediate Certificate Authority (CA), you might need to include the CA certificate chain in the certificate.pem file (usually by concatenating the server certificate and the intermediate CA certificates in the correct order).
-Private Key Security: Store your private key securely and ensure that only the OpenShift Router has access to it through the Secret.
-Route Hostname: Make sure the host field in your OpenShift Route is set to the external hostname you want to use for Sourcegraph (the one that matches your certificate).
-By following these steps, you should be able to successfully install your JKS certificate for your Sourcegraph deployment on OpenShift using Edge TLS termination. The OpenShift Router will handle the HTTPS connections using your certificate.
+Choosing the Right Termination Type:
+
+If your application already handles TLS internally (e.g., it has its own HTTPS listener configured), you would choose "Passthrough" for the TLS Termination in the Route configuration and not provide any certificate or key to the Route.
+Edge termination is generally preferred when you want OpenShift to handle the TLS termination, offloading the certificate management from your application.
+Re-encrypt is used when you need end-to-end encryption, including the traffic between the Router and your pods (often for security or compliance reasons). This requires the Router to have a certificate for the external connection and your pods to have a certificate that the Router trusts for the internal connection.
