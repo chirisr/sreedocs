@@ -1,3 +1,5 @@
+The document provides a step-by-step guide on how to secure a Sourcegraph deployment on OpenShift using a Java KeyStore (JKS) certificate with Edge TLS termination. Edge termination means the OpenShift Router (HAProxy) will handle the TLS (HTTPS) encryption and decryption, using the provided certificate and private key.
+
 Convert your JKS certificate to PEM format: OpenShift Routes with Edge TLS termination require the certificate and private key to be in PEM format. You'll need to use the keytool and openssl commands to perform this conversion.
 
 Step 1: Export from JKS to PKCS12 (.p12 or .pfx):
