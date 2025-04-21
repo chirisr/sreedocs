@@ -1,84 +1,76 @@
-The document provides a step-by-step guide on how to secure a Sourcegraph deployment on OpenShift using a Java KeyStore (JKS) certificate with Edge TLS termination. Edge termination means the OpenShift Router (HAProxy) will handle the TLS (HTTPS) encryption and decryption, using the provided certificate and private key.
+OpenShift Image and Resource Management API
+This API helps you manage container images and related resources (like Pods and DeploymentConfigs) within your OpenShift cluster. It's designed to help you clean up old or unused images and keep your OpenShift environment tidy.
+Core Functionality
+The API provides the following key functions:
+Listing Stale Images: Find container images in your OpenShift registry that are older than a specified number of days.
+Deleting Stale Images: Remove the stale images identified in the listing. Optionally, delete associated Pods and DeploymentConfigs that are using those old images.
+Resource Management: Identify and manage Pods and DeploymentConfigs related to stale images.
+Customization:
+Filter operations by OpenShift namespace.
+Skip specific image tags from deletion.
+Keep a specified number of the most recent images.
+API Endpoints
+The API consists of the following endpoints:
+GET /list-stale-images/
+Lists stale images, pods, and deployment configs.
+Also lists pods and deployment configs with specific statuses.
+Parameters:
+repository_url (str, required): URL of the image repository (e.g., one of the repositories defined in your configuration).
+image_id (str, required): ID of the image (e.g., 'my-app').
+image_name (str, required): Name of the image (e.g., 'my-image').
+tag_name (str, optional): Tag name to filter images. Can be a single tag or a comma-separated list.
+remove_older_than (int, optional): Remove images older than this many days (default: 30).
+filter_namespace (str, optional): Filter resources by namespace.
+openshift_cluster_url (str, optional): URL of the OpenShift cluster (default: Uses a pre-defined cluster URL).
+skip_tags (List[str], optional): List of tags to skip during deletion.
+keep_most_recent (int, optional): Number of recent images to keep. 0 to disable.
+Returns: HTML page displaying:
+Stale images
+DeploymentConfigs to delete
+Pods to delete
+Recent images
+Pod statuses
+Deployment config statuses
+DELETE /delete-stale-images/
+Deletes stale images, pods, and deployment configs.
+Parameters:
+repository_url (str, required): URL of the image repository.
+image_id (str, required): ID of the image.
+image_name (str, required): Name of the image.
+tag_name (str, optional): Tag name to clean.
+remove_older_than (int, required): Remove images older than this many days.
+filter_namespace (str, optional): Filter resources by namespace.
+delete_operation (bool, optional): Enable deletion of images, pods, and deployment configs (default: True).
+openshift_cluster_url (str, required): URL of the OpenShift cluster.
+skip_tags (List[str], required): Comma-separated list of tags to skip.
+keep_most_recent (int, optional): Number of recent images to keep. 0 to disable.
+Returns: HTML page displaying the results of the deletion operation.
+Key Features and Concepts
+Stale Image: An image is considered stale if its creation date is older than the specified remove_older_than value.
+Namespaces: OpenShift namespaces allow you to organize projects. This API lets you filter operations by namespace to target specific projects.
+Image Identification: Images are identified by their repository URL, image ID, image name, and tag.
+Resource Cleanup: The API can automatically identify and delete Pods and DeploymentConfigs that use stale images, helping to reclaim resources.
+Configuration: The API relies on an OpenShift ConfigMap and Secret for configuration:
+ConfigMap: Stores the Artifactory and registry URLs.
+Secret: Stores authentication credentials for the registry.
+Authentication: The API uses a registry token for authentication when interacting with the OpenShift container registry.
+OpenShift Client: The API uses the OpenShift client library (OCPClient) to interact with the OpenShift cluster.
+How to Use the API
+Deploy the API: Deploy this API within your OpenShift cluster. It will need to be able to access the OpenShift API, the container registry, and any Artifactory instance you are using.
+Configure the API:
+Create a ConfigMap with the artifactory_url and registry_url.
+Create a Secret with the registry authentication token.
+Use the Endpoints: Use the GET and DELETE endpoints to list and delete stale images, respectively. You can use a web browser, curl, or an HTTP client library to interact with the API.
+Example Usage
+To list stale images:
+GET /list-stale-images/?repository_url=<repository_url>&image_id=<image_id>&image_name=<image_name>&remove_older_than=30&filter_namespace=<namespace>
 
-Convert your JKS certificate to PEM format: OpenShift Routes with Edge TLS termination require the certificate and private key to be in PEM format. You'll need to use the keytool and openssl commands to perform this conversion.
 
-Step 1: Export from JKS to PKCS12 (.p12 or .pfx):
+To delete stale images:
+DELETE /delete-stale-images/?repository_url=<repository_url>&image_id=<image_id>&image_name=<image_name>&remove_older_than=30&filter_namespace=<namespace>&delete_operation=True
 
-Open a command prompt or PowerShell on your Windows machine (where you likely have the JKS file).
 
-Bash
-
-"C:\Program Files\Java\jdk-XX\bin\keytool" -importkeystore -srckeystore yourkeystore.jks -destkeystore output.p12 -deststoretype PKCS12
-Replace "C:\Program Files\Java\jdk-XX\bin\keytool" with the actual path to your keytool.exe.
-Replace yourkeystore.jks with the name of your JKS file.
-You will be prompted for the JKS keystore password.
-You will then be asked to create a password for the output.p12 file.
-Step 2: Convert PKCS12 to PEM:
-
-Ensure you have OpenSSL installed on your Windows machine.
-
-Extract Certificate (certificate.pem):
-
-Bash
-
-openssl pkcs12 -in output.p12 -clcerts -nokeys -out certificate.pem
-You will be prompted for the password of the output.p12 file.
-
-Extract Private Key (private.key):
-
-Bash
-
-openssl pkcs12 -in output.p12 -nocerts -out private.key
-You will be prompted for the password of the output.p12 file. You might also be asked to set a passphrase for the private key (you can leave it blank if you prefer no passphrase).
-
-Create an OpenShift Secret containing the PEM certificate and key: This is the recommended way to securely manage your TLS credentials in OpenShift.
-
-Open your OpenShift CLI and navigate to your Sourcegraph project:
-
-Bash
-
-oc project <your-sourcegraph-project-name>
-Then, create the secret:
-
-Bash
-
-oc create secret tls sourcegraph-tls-cert --cert=certificate.pem --key=private.key
-Replace <your-sourcegraph-project-name> with the actual name of your Sourcegraph project.
-Ensure that certificate.pem and private.key are in the directory where you run this command.
-Configure the OpenShift Route for Sourcegraph to use the TLS Secret:
-
-You'll need to edit the OpenShift Route that exposes your Sourcegraph instance.
-
-Using the OpenShift Web Console (UI):
-
-Using the OpenShift Web Console (UI):
-
-Navigate to your Project: Go to your project in the OpenShift web console.
-Go to Networking -> Routes: In the left-hand navigation menu, click on "Networking" and then "Routes".
-Click "Create Route": In the top right corner, click the "Create Route" button.
-Configure Basic Route Details:
-Name: Enter a name for your route (e.g., my-secure-app).
-Hostname: Enter the external hostname you want to use to access your application (e.g., myapp.example.com).
-Path (Optional): If you want to expose your application under a specific path, enter it here (e.g., /).
-Service: Select the name of the OpenShift Service that exposes your application.
-Target Port: Specify the port that your service is listening on (e.g., 8080).
-Configure TLS Settings:
-Under the "TLS Settings" section, choose "Secure route".
-Termination: Select "Edge".
-Certificate: Open your combined.pem file with a text editor. Copy the entire content, including the -----BEGIN CERTIFICATE----- and -----END CERTIFICATE----- markers, and paste it into this field.
-Private Key: In the same combined.pem file, find the section enclosed by -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- markers. Copy the entire content of that section and paste it into this field.
-CA Certificate (Optional): If your certificate was issued by an intermediate CA, and if your combined.pem file contains those intermediate certificates, you may need to specify them here. If not, you may have a separate cacert.pem file.
-Insecure Traffic (Optional): Choose how to handle insecure (HTTP) traffic (e.g., "Allow", "Redirect", "Disable").
-Click "Create": Once you have filled in all the necessary details, click the "Create" button.
-
-Verify the Configuration:
-
-Open your Sourcegraph URL in a web browser (using https://).
-Your browser should now recognize the certificate you provided. Check the certificate details in your browser to confirm it's the correct one.
-If you configured "Redirect" for insecure traffic, accessing the HTTP version of your Sourcegraph URL should automatically redirect to HTTPS.
-
-Choosing the Right Termination Type:
-
-If your application already handles TLS internally (e.g., it has its own HTTPS listener configured), you would choose "Passthrough" for the TLS Termination in the Route configuration and not provide any certificate or key to the Route.
-Edge termination is generally preferred when you want OpenShift to handle the TLS termination, offloading the certificate management from your application.
-Re-encrypt is used when you need end-to-end encryption, including the traffic between the Router and your pods (often for security or compliance reasons). This requires the Router to have a certificate for the external connection and your pods to have a certificate that the Router trusts for the internal connection.
+Important Considerations
+Permissions: Ensure that the API has the necessary permissions to access the OpenShift API, container registry, and Artifactory.
+Deletion: Use the delete functionality with caution, as it can permanently remove images, Pods, and DeploymentConfigs. Test in a non-production environment first.
+Tag Management: Be mindful of the tags you are deleting, as deleting a tag may affect deployments that rely on that tag.
