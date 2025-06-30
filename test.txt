@@ -1,928 +1,116 @@
-import os
-import datetime
-from typing import List, Optional, Dict, Any, Annotated, Tuple
-from dateutil import tz
-import requests
-from fastapi import FastAPI, Depends, Query, HTTPException, Form, Request
-from kubernetes import config
-from kubernetes.client import CoreV1Api, AppsV1Api
-from openshift.client import OCPClient
-from pydantic import BaseModel, Field, validator
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from tabulate import tabulate
-from functools import lru_cache
-import logging
-
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-
-class OpenShiftClusterURLs(str):
-    CLUSTER_1 = "https://your-openshift-cluster-1.example.com"
-    CLUSTER_2 = "https://your-openshift-cluster-2.example.com"
-
-    @classmethod
-    def __modify_schema__(cls, field_schema: dict[str, Any]) -> None:
-        field_schema["enum"] = [cls.CLUSTER_1, cls.CLUSTER_2]
-
-
-repositories = ["https://docker.io", "https://quay.io", "https://registry.access.redhat.com"]
-
-
-class CleanerConfig(BaseModel):
-    openshift_cluster_url: OpenShiftClusterURLs
-    artifactory_url: str
-    registry_url: str
-    skip_tags: List[str] = Field(default_factory=list)
-
-    @validator("artifactory_url", "registry_url")
-    def url_validation(cls, value: str):
-        if not value.startswith("https://"):
-            raise ValueError(f"{value} is not a valid https URL")
-        return value
-
-
-def get_namespace() -> str:
-    """
-    Gets the namespace the application is running in.
-    """
-    try:
-        with open("/run/secrets/kubernetes.io/serviceaccount/namespace", "r") as f:
-            namespace = f.read().strip()
-    except FileNotFoundError:
-        namespace = "default"  # Fallback to 'default' if not running in a pod
-    return namespace
-
-
-def load_config_from_configmap(namespace: str, configmap_name: str) -> Dict[str, str]:
-    """
-    Loads configuration from a Kubernetes ConfigMap.
-
-    Args:
-        namespace (str): The namespace where the ConfigMap resides.
-        configmap_name (str): The name of the ConfigMap.
-
-    Returns:
-        Dict[str, str]: A dictionary containing the configuration data.
-    """
-    try:
-        config.load_incluster_config()
-        v1 = CoreV1Api()
-        cm = v1.read_namespaced_config_map(configmap_name, namespace)
-        return cm.data
-    except Exception as e:
-        logger.error(f"Error loading config from ConfigMap: {e}")
-        raise  # Re-raise the exception to be handled by FastAPI
-
-
-def load_secrets_from_secret(namespace: str, secret_name: str) -> Dict[str, str]:
-    """
-    Loads secrets from a Kubernetes Secret.
-
-    Args:
-        namespace (str): The namespace where the Secret resides.
-        secret_name (str): The name of the Secret.
-
-    Returns:
-        Dict[str, str]: A dictionary containing the secret data.
-    """
-    try:
-        config.load_incluster_config()
-        v1 = CoreV1Api()
-        secret = v1.read_namespaced_secret(secret_name, namespace)
-        # Decode the base64 encoded secret values
-        return {k: v.decode("utf-8") for k, v in secret.data.items()}
-    except Exception as e:
-        logger.error(f"Error loading secrets from Secret: {e}")
-        raise  # Re-raise the exception to be handled by FastAPI
-def get_openshift_client(cluster_url: str) -> OCPClient:
-    """
-    Creates an OpenShift client.
-
-    Args:
-        cluster_url (str): The URL of the OpenShift cluster.
-
-    Returns:
-        OCPClient: An OpenShift client object.
-    """
-    try:
-        config.load_incluster_config()  # Try to load in-cluster config first
-        client = OCPClient()
-        return client
-    except Exception as e:
-        logger.error(f"Error initializing OpenShift client: {e}")
-        raise  # Re-raise to be caught by FastAPI
-
-
-def get_registry_token(registry_url: str) -> str:
-    """
-    Retrieves a registry token for authentication.  This version assumes
-    you have a service account token mounted.  You would need to adapt
-    this for other authentication methods.
-
-    Args:
-        registry_url (str): The URL of the container registry.
-
-    Returns:
-        str: The registry token.
-    """
-    try:
-        with open(
-            "/run/secrets/kubernetes.io/serviceaccount/token", "r"
-        ) as token_file:
-            registry_token = token_file.read().strip()
-        return registry_token
-    except Exception as e:
-        logger.error(f"Error getting registry token: {e}")
-        raise  # Re-raise to be caught by FastAPI
-
-def get_image_digests_with_creation_dates(
-    registry_url: str,
-    image_name: str,
-    registry_token: str,
-    skip_tags: List[str],
-    tag_name: Optional[str] = None,
-) -> Dict[str, Optional[Dict[str, Any]]]:
-    """
-    Retrieves image digests and their creation dates from the registry.
-
-    Args:
-        registry_url (str): The URL of the container registry.
-        image_name (str): The name of the image.
-        registry_token (str): The authentication token for the registry.
-        skip_tags (List[str]): A list of tags to skip.
-        tag_name (Optional[str], optional): The tag name. Defaults to None.
-
-    Returns:
-        Dict[str, Optional[datetime.datetime]]: A dictionary where keys are image tags
-                                                and values are dictionaries containing creation dates and image identifiers.
-    """
-    logger.info(
-        f"Getting image digests with creation dates for {image_name}:{tag_name} from {registry_url}"
-    )
-    try:
-        registry_api_url = f"https://{registry_url}/v2/{image_name}/tags/list"
-        headers = {"Authorization": f"Bearer {registry_token}"}
-        response = requests.get(registry_api_url, headers=headers, verify=False)
-        response.raise_for_status()
-        tags_list = response.json().get("tags", [])
-        if tag_name :
-            if "," in tag_name:
-                split_tags = tag_name.split(",")
-                for tag in split_tags:
-                  if tag not in tags_list:
-                    logger.warning(f"Image with tag {tag} not found.")
-                    return {}
-            elif tag_name not in tags_list:
-                logger.warning(f"Image with tag {tag_name} not found.")
-                return {}
-
-        tags_with_data = {}
-        image_found = False
-
-        # Check the type of skip_tags. If it's a string, split it into a list.
-        logger.info(f"Initial type of skip_tags: {type(skip_tags)}")
-        if isinstance(skip_tags, str):
-            logger.info(f"skip_tags is a string, splitting it: {skip_tags}")
-            skip_tags = skip_tags.split(",")  # Split the string into a list
-            logger.info(f"After splitting, skip_tags: {skip_tags}")
-        elif isinstance(skip_tags, list) and len(skip_tags) > 1:
-            logger.info(f"skip_tags is a list. Checking for comma-separated values...")
-            new_skip_tags = []
-            for item in skip_tags:
-                if isinstance(item, str) and "," in item:
-                    logger.info(f"Found comma-separated string: {item}")
-                    new_skip_tags.extend(item.split(","))
-                else:
-                    new_skip_tags.append(item)
-            skip_tags = new_skip_tags
-            logger.info(f"skip_tags after processing: {skip_tags}")
-        else:
-            logger.info(
-                f"skip_tags is not a string or list with more than one element: {skip_tags}"
-            )
-
-        for tag in tags_list:
-            if tag_name:
-                if "," in tag_name:
-                  if tag not in tag_name.split(","):
-                    continue
-                elif tag != tag_name:
-                    continue
-            if tag in skip_tags:
-                logger.info(
-                    f"Skipping tag {tag} as it is in the skip list.  tag: {tag}, skip_tags: {skip_tags}"
-                )
-                continue
-
-            manifest_api_url = f"https://{registry_url}/v2/{image_name}/manifests/{tag}"
-            manifest_response = requests.get(
-                manifest_api_url,
-                headers={
-                    "Accept": "application/vnd.docker.distribution.manifest.v2+json",
-                    "Authorization": f"Bearer {registry_token}",
-                },
-                verify=False,
-            )
-            manifest_response.raise_for_status()
-            manifest = manifest_response.json()
-            if "config" in manifest and "digest" in manifest["config"]:
-                image_identifier = manifest["config"]["digest"]
-                creation_date = get_image_creation_date(
-                    registry_url, image_name, tag, registry_token
-                )
-                if creation_date:
-                    tags_with_data[tag] = {
-                        "image_identifier": f"{image_name}:{tag}",
-                        "creation_date": creation_date,
-                    }
-                    image_found = True
-                else:
-                    logger.warning(
-                        f"Failed to retrieve creation date for image: {image_name}:{tag}"
-                    )
-            else:
-                logger.warning(
-                    f"Image config or digest not found in manifest for {image_name}:{tag}"
-                )
-
-        if not image_found:
-            logger.warning(f"No images found for {image_name} with tag {tag_name}.")
-            return {}
-
-        return tags_with_data
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error retrieving image digests and creation dates: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving image digests and creation dates: {e}",
-        )
-
-def get_image_creation_date(
-    registry_url: str, image_name: str, tag_name: str, registry_token: str
-) -> Optional[datetime.datetime]:
-    """
-    Retrieves the creation date of an image tag from the registry.
-
-    Args:
-        registry_url (str): The URL of the container registry.
-        image_name (str): The name of the image.
-        tag_name (str): The tag name.
-        registry_token (str): The registry authentication token.
-
-    Returns:
-        Optional[datetime.datetime]: The creation date of the image, or None on error.
-    """
-    try:
-        # Example URL: https://myregistry.io/v2/my-image/manifests/mytag
-        manifest_url = f"https://{registry_url}/v2/{image_name}/manifests/{tag_name}"
-        headers = {"Authorization": f"Bearer {registry_token}"}
-
-        response = requests.get(manifest_url, headers=headers, verify=False)
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-
-        manifest_data = response.json()
-        if "config" in manifest_data and "digest" in manifest_data["config"]:
-            config_digest = manifest_data["config"]["digest"]
-            # Fetch the image config to get the creation date
-            config_url = f"https://{registry_url}/v2/{image_name}/blobs/{config_digest}"
-            config_response = requests.get(config_url, headers=headers, verify=False)
-            config_response.raise_for_status()
-            config_data = config_response.json()
-            if "created" in config_data:
-                creation_date_str = config_data["created"]
-                # Parse the date string into a datetime object
-                creation_date = datetime.datetime.fromisoformat(creation_date_str)
-                return creation_date
-            else:
-                logger.warning(
-                    f"Creation date not found in image config for {image_name}:{tag_name}"
-                )
-                return None
-        else:
-            logger.warning(
-                f"Config digest not found in manifest for {image_name}:{tag_name}"
-            )
-            return None
-
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            f"Error retrieving image creation date for {image_name}:{tag_name}: {e}"
-        )
-        return None  # Return None instead of raising an exception
-
-
-def get_deployment_configs(client: OCPClient, namespace: str) -> List[Any]:
-    """
-    Retrieves all DeploymentConfigs in the specified namespace.
-
-    Args:
-        client (OCPClient): The OpenShift client.
-        namespace (str): The namespace to search in.
-
-    Returns:
-        List[Any]: A list of DeploymentConfig objects.  Returns an empty list
-                     if no DeploymentConfigs are found, or if an error occurs.
-    """
-    try:
-        deployment_configs = client.resources.get(
-            api_version="apps.openshift.io/v1", kind="DeploymentConfig"
-        ).get(namespace=namespace)
-        return list(deployment_configs)  # Ensure it's a list
-    except Exception as e:
-        logger.error(
-            f"Error getting DeploymentConfigs in namespace {namespace}: {e}"
-        )
-        return []  # Return an empty list on error
-def get_pods(client: OCPClient, namespace: str) -> List[Any]:
-    """
-    Retrieves all Pods in the specified namespace.
-
-    Args:
-        client (OCPClient): The OpenShift client.
-        namespace (str): The namespace to search in.
-
-    Returns:
-        List[Any]: A list of Pod objects. Returns an empty list on error.
-    """
-    try:
-        pods = client.resources.get(api_version="v1", kind="Pod").get(
-            namespace=namespace
-        )
-        return list(pods)  # Ensure it's a list
-    except Exception as e:
-        logger.error(f"Error getting Pods in namespace {namespace}: {e}")
-        return []  # Return an empty list on error
-
-
-
-def get_pod_statuses(client: OCPClient, namespaces: List[str]) -> List[List[str]]:
-    """
-    Retrieves the statuses of pods in the specified namespaces.
-
-    Args:
-        client (OCPClient): The OpenShift client.
-        namespaces (List[str]): The list of namespaces to check.
-
-    Returns:
-        List[List[str]]: A list of pod statuses.
-    """
-    pod_statuses = []
-    for namespace in namespaces:
-        pods = client.resources.get(api_version="v1", kind="Pod").get(namespace=namespace)
-        for pod in pods:
-            status = pod.status.phase
-            reason = pod.status.reason if hasattr(pod.status, "reason") else ""
-            if status in ["Pending", "Failed", "Unknown", "Terminating"]:
-                pod_statuses.append([namespace, pod.metadata.name, status, reason])
-            elif status == "Running":
-                for container_status in pod.status.container_statuses:
-                    if container_status.state.waiting:
-                        wait_reason = container_status.state.waiting.reason
-                        if wait_reason in ["CrashLoopBackOff"]:
-                            pod_statuses.append([namespace, pod.metadata.name, "CrashLoopBackOff", wait_reason])
-    return pod_statuses
-
-
-def get_deployment_config_statuses(client: OCPClient, namespaces: List[str]) -> List[List[str]]:
-    """
-    Retrieves the statuses of deployment configs in the specified namespaces.
-
-    Args:
-        client (OCPClient): The OpenShift client.
-        namespaces (List[str]): The list of namespaces to check.
-
-    Returns:
-        List[List[str]]: A list of deployment config statuses.
-    """
-    deployment_config_statuses = []
-    for namespace in namespaces:
-        deployment_configs = client.resources.get(
-            api_version="apps.openshift.io/v1", kind="DeploymentConfig"
-        ).get(namespace=namespace)
-        for deployment_config in deployment_configs:
-            status = deployment_config.status.last_version
-            deployment_config_statuses.append([namespace, deployment_config.metadata.name, status])
-    return deployment_config_statuses
-def delete_resources_by_status_func(client: OCPClient, namespaces: List[str]) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
-    """
-    Deletes pods and deployment configs in the specified namespaces based on their statuses.
-
-    Args:
-        client (OCPClient): The OpenShift client.
-        namespaces (List[str]): The list of namespaces to check.
-
-    Returns:
-        Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]: A tuple containing lists of deleted pod
-                                                            and deployment config names with their namespaces.
-    """
-    deleted_pods = []
-    deleted_deployment_configs = []
-    for namespace in namespaces:
-        # Delete pods based on status
-        pods = client.resources.get(api_version="v1", kind="Pod").get(namespace=namespace)
-        for pod in pods:
-            status = pod.status.phase
-            reason = pod.status.reason if hasattr(pod.status, "reason") else ""
-            if status in ["Pending", "Failed", "Unknown", "Terminating"]:
-                logger.info(f"Deleting pod {pod.metadata.name} in namespace {namespace} with status {status} and reason {reason}")
-                try:
-                    client.resources.get(api_version="v1", kind="Pod").delete(name=pod.metadata.name, namespace=namespace)
-                    deleted_pods.append((namespace, pod.metadata.name))
-                except Exception as e:
-                    logger.error(f"Error deleting pod {pod.metadata.name} in namespace {namespace}: {e}")
-
-            elif status == "Running":
-                for container_status in pod.status.container_statuses:
-                    if container_status.state.waiting:
-                        wait_reason = container_status.state.waiting.reason
-                        if wait_reason in ["CrashLoopBackOff"]:
-                            logger.info(
-                                f"Deleting pod {pod.metadata.name} in namespace {namespace} with CrashLoopBackOff reason: {wait_reason}"
-                            )
-                            try:
-                                client.resources.get(api_version="v1", kind="Pod").delete(
-                                    name=pod.metadata.name, namespace=namespace
-                                )
-                                deleted_pods.append((namespace, pod.metadata.name))
-                            except Exception as e:
-                                logger.error(
-                                    f"Error deleting pod {pod.metadata.name} in namespace {namespace}: {e}"
-                                )
-        # Delete deployment configs based on status.  We delete them if their status.latest_version is 0
-        deployment_configs = client.resources.get(
-            api_version="apps.openshift.io/v1", kind="DeploymentConfig"
-        ).get(namespace=namespace)
-        for deployment_config in deployment_configs:
-            status = deployment_config.status.latest_version
-            if status == 0:
-                logger.info(
-                    f"Deleting deployment config {deployment_config.metadata.name} in namespace {namespace} with status {status}"
-                )
-                try:
-                    client.resources.get(api_version="apps.openshift.io/v1", kind="DeploymentConfig").delete(
-                        name=deployment_config.metadata.name, namespace=namespace
-                    )
-                    deleted_deployment_configs.append((namespace, deployment_config.metadata.name))
-                except Exception as e:
-                    logger.error(
-                        f"Error deleting deployment config {deployment_config.metadata.name} in namespace {namespace}: {e}"
-                    )
-    return deleted_pods, deleted_deployment_configs
-
-@app.get("/list-stale-images/")
-async def list_stale_images(
-    request: Request,
-    repository_url: Annotated[str, Query(description="URL of the image repository", enum=repositories)],
-    image_id: str = Query(..., description="ID of the image (e.g., 'my-app')"),
-    image_name: str = Query(..., description="Name of the image (e.g., 'my-image')"),
-    tag_name: Optional[str] = Query(None, description="Optional tag name to clean"),
-    remove_older_than: int = Query(30, description="Remove images older than this many days"),
-    filter_namespace: Optional[str] = Query(None, description="Filter resources by namespace"),
-    openshift_cluster_url: OpenShiftClusterURLs = Query(default=OpenShiftClusterURLs.CLUSTER_1, description="URL of the OpenShift cluster"),
-    skip_tags: List[str] = Query([], description="List of tags to skip"),
-    keep_most_recent: int = Query(0, description="Number of recent images to keep.  0 to disable."),
-):
-    """
-    Lists stale images, pods, and deployment configs in the specified image repository within an OpenShift environment.
-    Also lists pods and deployment configs with specific statuses.
-    """
-    namespace = get_namespace()
-    config_map_name = os.getenv("CONFIGMAP_NAME", "registry-cleaner-config")
-    secret_name = os.getenv("SECRET_NAME", "registry-cleaner-secret")
-
-    logger.info(f"Listing stale images. Tag name: {tag_name}")
-    logger.info(f"skip_tags: {skip_tags}")
-    logger.info(f"keep_most_recent: {keep_most_recent}")
-
-    config_data = load_config_from_configmap(namespace, config_map_name)
-    secret_data = load_secrets_from_secret(namespace, secret_name)
-    try:
-        config = CleanerConfig(
-            openshift_cluster_url=openshift_cluster_url,
-            artifactory_url=config_data["artifactory_url"],
-            registry_url=config_data["registry_url"],
-            skip_tags=config_data.get("skip_tags", [])
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    client = get_openshift_client(config.openshift_cluster_url)
-
-    all_stale_images = {}
-    deployment_configs_to_delete = []
-    pods_to_delete = []
-
-    registry_token = get_registry_token(config.registry_url)
-    # Construct image_name here.
-    full_image_name = f"{image_id}/{image_name}"
-    tags_with_data = get_image_digests_with_creation_dates(config.registry_url, full_image_name, registry_token, tag_name)
-    logger.info(f"tags_with_data: {tags_with_data}")
-    stale_images = {}
-    cutoff_date = datetime.datetime.now(tz.UTC) - datetime.timedelta(days=remove_older_than)
-    recent_images = {}
-    images_to_keep = []
-
-    if keep_most_recent > 0:
-        if not tag_name:
-            sorted_items = sorted(tags_with_data.items(), key=lambda item: item[1]["creation_date"])
-            for tag, data in sorted_items:
-                if data["creation_date"] is not None:
-                    images_to_keep.append(f"{full_image_name}:{tag}")
-            if len(images_to_keep) > 0:
-                images_to_keep = [images_to_keep[-1]]  # Keep only the most recent
-        logger.info(f"Images to keep: {images_to_keep}")
-
-    for tag, data in tags_with_data.items():
-        creation_date = data["creation_date"]
-        if creation_date is None:
-            continue
-        if creation_date < cutoff_date and f"{full_image_name}:{tag}" not in images_to_keep and tag not in config.skip_tags:
-            stale_images[f"{full_image_name}:{tag}"] = tag
-            logger.info(f"Tag {tag} is stale. skip_tags is: {config.skip_tags}")
-        else:
-            recent_images[tag] = data
-            logger.info(f"Tag {tag} is not stale. skip_tags is: {config.skip_tags}")
-
-    all_stale_images.update(stale_images)
-
-    namespaces_to_check = [namespace]
-    if filter_namespace:
-        if filter_namespace != namespace:
-            namespaces_to_check.append(filter_namespace)
-
-    for ns in namespaces_to_check:
-        deployment_configs = get_deployment_configs(client, ns)
-        if not deployment_configs:
-            logger.warning(f"No DeploymentConfigs found in namespace {ns} during deletion check.")
-        else:
-            for deployment_config in deployment_configs:
-                deployment_config_namespace = deployment_config.metadata.namespace
-                if filter_namespace and deployment_config_namespace != filter_namespace:
-                    logger.info(
-                        f"Skipping DeploymentConfig {deployment_config.metadata.name} in namespace {deployment_config_namespace} as it does not match filter {filter_namespace}."
-                    )
-                    continue
-                deployment_config_name = deployment_config.metadata.name
-                containers = deployment_config.spec.template.spec.containers
-                for container in containers:
-                    image = container.image
-                    for image_identifier, tag in stale_images.items():
-                        if image_identifier in image:
-                            deployment_configs_to_delete.append([deployment_config_namespace, deployment_config_name])
-
-        pods = get_pods(client, ns)
-        if not pods:
-            logger.warning(f"No Pods found in namespace {ns} during deletion check.")
-        else:
-            for pod in pods:
-                pod_namespace = pod.metadata.namespace
-                if filter_namespace and pod_namespace != filter_namespace:
-                    logger.info(
-                        f"Skipping Pod {pod.metadata.name} in namespace {pod_namespace} as it does not match filter {filter_namespace}."
-                    )
-                    continue
-                pod_name = pod.metadata.name
-                containers = pod.spec.containers
-                for container in containers:
-                    image = container.image
-                    for image_identifier, tag in stale_images.items():
-                        if image_identifier in image:
-                            pods_to_delete.append([pod_namespace, pod_name])
-
-    image_table = []
-    for image_identifier, tag in all_stale_images.items():
-        image_table.append([image_identifier, tag])
-    image_table_formatted = "Image, Tag\n"
-    for row in image_table:
-        image_table_formatted += f"{row[0]}, {row[1]}\n"
-
-    recent_images_table = []
-    for tag, data in recent_images.items():
-        recent_images_table.append(
-            [f"{repository_url}/{full_image_name}:{tag}", tag, data["creation_date"].isoformat() if data["creation_date"] else "N/A"]
-        )
-    recent_images_table_formatted = "Image, Tag, Creation Date\n"
-    for row in recent_images_table:
-        recent_images_table_formatted += f"{row[0]}, {row[1]}, {row[2]}\n"
-    deployment_configs_table_formatted = "DeploymentConfig Namespace, DeploymentConfig Name\n"
-    for row in deployment_configs_to_delete:
-        deployment_configs_table_formatted += f"{row[0]}, {row[1]}\n"
-
-    pods_table_formatted = "Pod Namespace, Pod Name\n"
-    for row in pods_to_delete:
-        pods_table_formatted += f"{row[0]}, {row[1]}\n"
-    # Get Pod Statuses
-    pod_status_list = get_pod_statuses(client, namespaces_to_check)
-    pod_status_table = "Namespace, Pod Name, Status, Reason\n"
-    for row in pod_status_list:
-        pod_status_table += f"{row[0]}, {row[1]}, {row[2]}, {row[3]}\n"
-
-    # Get Deployment Config Statuses
-    deployment_config_status_list = get_deployment_config_statuses(client, namespaces_to_check)
-    deployment_config_status_table = "Namespace, DeploymentConfig Name, Status\n"
-    for row in deployment_config_status_list:
-        deployment_config_status_table += f"{row[0]}, {row[1]}, {row[2]}\n"
-
-    return templates.TemplateResponse(
-        "list_stale_images.html",
-        {
-            "request": request,
-            "stale_images": image_table_formatted,
-            "deployment_configs_to_delete": deployment_configs_table_formatted,
-            "pods_to_delete": pods_table_formatted,
-            "recent_images": recent_images_table_formatted,
-            "openshift_cluster_urls": OpenShiftClusterURLs,
-            "selected_cluster_url": openshift_cluster_url,
-            "repositories": repositories,
-            "selected_repository_url": repository_url,
-            "skip_tags": skip_tags,
-            "keep_most_recent": keep_most_recent,
-            "pod_statuses": pod_status_table,  # Add pod statuses to the context
-            "deployment_config_statuses": deployment_config_status_table,  # Add deployment config statuses
-        },
-    )
-
-
-@app.delete("/delete-stale-images/")
-async def delete_stale_images(
-    request: Request,
-    repository_url: Annotated[str, Query(description="URL of the image repository", enum=repositories)],
-    image_id: str = Query(..., description="ID of the image (e.g., 'my-app')"),
-    image_name: str = Query(..., description="Name of the image (e.g., 'my-image')"),
-    tag_name: Optional[str] = Query(None, description="Optional tag name to cl in ["CrashLoopBackOff"]:
-                            pod_statuses.append([namespace, pod.metadata.name, "CrashLoopBackOff", wait_reason])
-    return pod_statuses
-
-
-def get_deployment_config_statuses(client: OCPClient, namespaces: List[str]) -> List[List[str]]:
-    """
-    Retrieves the statuses of deployment configs in the specified namespaces.
-
-    Args:
-        client (OCPClient): The OpenShift client.
-        namespaces (List[str]): The list of namespaces to check.
-
-    Returns:
-        List[List[str]]: A list of deployment config statuses.
-    """
-    deployment_config_statuses = []
-    for namespace in namespaces:
-        deployment_configs = client.resources.get(
-            api_version="apps.openshift.io/v1", kind="DeploymentConfig"
-        ).get(namespace=namespace)
-        for deployment_config in deployment_configs:
-            status = deployment_config.status.latest_version
-            deployment_config_statuses.append([namespace, deployment_config.metadata.name, status])
-    return deployment_config_statuses
-
-
-
-@app.delete("/delete-stale-images/")
-async def delete_stale_images(
-    request: Request,
-    repository_url: Annotated[str, Query(description="URL of the image repository", enum=repositories)],
-    image_id: str = Query(..., description="ID of the image (e.g., 'my-app')"),
-    image_name: str = Query(..., description="Name of the image (e.g., 'my-image')"),
-    tag_name: Optional[str] = Query(None, description="Optional tag name to clean"),
-    remove_older_than: int = Query(30, description="Remove images older than this many days"),
-    filter_namespace: Optional[str] = Query(None, description="Filter resources by namespace"),
-    delete_operation: bool = Query(True, description="Enable deletion of images, pods, and deployment configs"),
-    openshift_cluster_url: OpenShiftClusterURLs = Form(description="URL of the OpenShift cluster"),
-    skip_tags: List[str] = Form([], description="Comma-separated list of tags to skip"),
-    keep_most_recent: int = Query(0, description="Number of recent images to keep. 0 to disable."),
-    delete_by_pod_status: bool = Query(False, description="Delete pods based on their status"),
-    delete_by_deployment_config_status: bool = Query(False, description="Delete deployment configs based on their status"),
-):
-    """
-    Deletes stale images, pods, and deployment configs in the specified OpenShift environment.
-    Stale images are determined by their age (older than remove_older_than days).
-    Pods and deployment configs can be deleted based on their status.
-    """
-    namespace = get_namespace()
-    config_map_name = os.getenv("CONFIGMAP_NAME", "registry-cleaner-config")
-    secret_name = os.getenv("SECRET_NAME", "registry-cleaner-secret")
-    logger.info(
-        "Deleting stale images, pods, and deployment configs. "
-        f"Tag name: {tag_name}, Delete operation: {delete_operation}, "
-        f"Delete by pod status: {delete_by_pod_status}, Delete by deployment config status: {delete_by_deployment_config_status}"
-    )
-    logger.info(f"skip_tags: {skip_tags}")
-    logger.info(f"keep_most_recent: {keep_most_recent}")
-
-    config_data = load_config_from_configmap(namespace, config_map_name)
-    secret_data = load_secrets_from_secret(namespace, secret_name)
-    try:
-        config = CleanerConfig(
-            openshift_cluster_url=openshift_cluster_url,
-            artifactory_url=config_data["artifactory_url"],
-            registry_url=config_data["registry_url"],
-            skip_tags=config_data.get("skip_tags", [])
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    client = get_openshift_client(config.openshift_cluster_url)
-
-    all_stale_images = {}
-    all_deleted_images = []
-    all_deployment_configs_to_delete = []
-    all_pods_to_delete = []
-    deleted_pods_by_status = []
-    deleted_deployment_configs_by_status = []
-
-    registry_token = get_registry_token(config.registry_url)
-    # Construct image_name here.
-    full_image_name = f"{image_id}/{image_name}"
-    tags_with_data = get_image_digests_with_creation_dates(
-        config.registry_url, full_image_name, registry_token, tag_name
-    )
-    logger.info(f"tags_with_data: {tags_with_data}")
-
-    stale_images = {}
-    cutoff_date = datetime.datetime.now(tz.UTC) - datetime.timedelta(days=remove_older_than)
-    recent_images = {}
-    images_to_keep = []
-    if keep_most_recent > 0:
-        if not tag_name:
-            sorted_items = sorted(tags_with_data.items(), key=lambda item: item[1]["creation_date"])
-            for tag, data in sorted_items:
-                if data["creation_date"] is not None:
-                    images_to_keep.append(f"{full_image_name}:{tag}")
-            if len(images_to_keep) > 0:
-                images_to_keep = [images_to_keep[-1]]
-        logger.info(f"Images to keep: {images_to_keep}")
-
-    for tag, data in tags_with_data.items():
-        creation_date = data["creation_date"]
-        if creation_date is None:
-            continue
-        if (
-            creation_date < cutoff_date
-            and f"{full_image_name}:{tag}" not in images_to_keep
-            and tag not in config.skip_tags
-        ):
-            stale_images[f"{full_image_name}:{tag}"] = tag
-            logger.info(f"Tag {tag} is stale. skip_tags is: {config.skip_tags}")
-        else:
-            recent_images[tag] = data
-            logger.info(f"Tag {tag} is not stale. skip_tags is: {config.skip_tags}")
-    all_stale_images.update(stale_images)
-
-    namespaces_to_check = [namespace]
-    if filter_namespace:
-        if filter_namespace != namespace:
-            namespaces_to_check.append(filter_namespace)
-
-    deployment_configs_to_delete = []
-    pods_to_delete = []
-
-    if delete_operation:
-        for ns in namespaces_to_check:
-            deployment_configs = get_deployment_configs(client, ns)
-            if not deployment_configs:
-                logger.warning(
-                    f"No DeploymentConfigs found in namespace {ns} during deletion check."
-                )
-            else:
-                for deployment_config in deployment_configs:
-                    deployment_config_namespace = deployment_config.metadata.namespace
-                    if filter_namespace and deployment_config_namespace != filter_namespace:
-                        logger.info(
-                            f"Skipping DeploymentConfig {deployment_config.metadata.name} in namespace {deployment_config_namespace} as it does not match filter {filter_namespace}."
-                        )
-                        continue
-                    deployment_config_name = deployment_config.metadata.name
-                    containers = deployment_config.spec.template.spec.containers
-                    for container in containers:
-                        image = container.image
-                        for image_identifier, tag in stale_images.items():
-                            if image_identifier in image:
-                                deployment_configs_to_delete.append(
-                                    [deployment_config_namespace, deployment_config_name]
-                                )
-                                logger.info(
-                                    f"Deployment config {deployment_config_name} in namespace {deployment_config_namespace} uses stale image {image_identifier} with tag {tag}"
-                                )
-            if delete_by_deployment_config_status:
-                deleted_deployment_configs_by_status = delete_resources_by_status_func(client, [ns])[1]
-                all_deployment_configs_to_delete.extend(deleted_deployment_configs_by_status)
-
-            pods = get_pods(client, ns)
-            if not pods:
-                logger.warning(f"No Pods found in namespace {ns} during deletion check.")
-            else:
-                for pod in pods:
-                    pod_namespace = pod.metadata.namespace
-                    if filter_namespace and pod_namespace != filter_namespace:
-                        logger.info(
-                            f"Skipping Pod {pod.metadata.name} in namespace {pod_namespace} as it does not match filter {filter_namespace}."
-                        )
-                        continue
-                    pod_name = pod.metadata.name
-                    containers = pod.spec.containers
-                    for container in containers:
-                        image = container.image
-                        for image_identifier, tag in stale_images.items():
-                            if image_identifier in image:
-                                pods_to_delete.append([pod_namespace, pod_name])
-                                logger.info(
-                                    f"Pod {pod_name} in namespace {pod_namespace} uses stale image {image_identifier} with tag {tag}"
-                                )
-            if delete_by_pod_status:
-                deleted_pods_by_status = delete_resources_by_status_func(client, [ns])[0]
-                all_pods_to_delete.extend(deleted_pods_by_status)
-
-    if delete_operation:
-        for image_identifier, tag in stale_images.items():
-            # missing delete image logic
-            pass
-
-    image_table = []
-    for image_identifier, tag in all_stale_images.items():
-        image_table.append([image_identifier, tag])
-    # image_table_formatted = tabulate(image_table, headers=["Image", "Tag"], tablefmt="grid")
-    image_table_formatted =  "Image, Tag\n"
-    for row in image_table:
-        image_table_formatted += f"{row[0]}, {row[1]}\n"
-
-    recent_images_table = []
-    for tag, data in recent_images.items():
-        recent_images_table.append(
-            [f"{repository_url}/{full_image_name}:{tag}", tag, data["creation_date"].isoformat() if data["creation_date"] else "N/A"]
-        )
-    # recent_images_table_formatted = tabulate(
-    #     recent_images_table, headers=["Image", "Tag", "Creation Date"], tablefmt="grid"
-    # )
-    recent_images_table_formatted = "Image, Tag, Creation Date\n"
-    for row in recent_images_table:
-        recent_images_table_formatted += f"{row[0]}, {row[1]}, {row[2]}\n"
-
-    deployment_configs_table_formatted = []
-    for deployment_config in deployment_configs_to_delete:
-        deployment_configs_table_formatted.append([deployment_config[0], deployment_config[1]])
-    # deployment_configs_table_formatted = tabulate(
-    #     deployment_configs_to_delete, headers=["DeploymentConfig Namespace", "DeploymentConfig Name"], tablefmt="grid"
-    # )
-    deployment_configs_table_formatted = "DeploymentConfig Namespace, DeploymentConfig Name\n"
-    for row in deployment_configs_table_formatted:
-        deployment_configs_table_formatted += f"{row[0]}, {row[1]}\n"
-
-    pods_table_formatted = []
-    for pod in pods_to_delete:
-        pods_table_formatted.append([pod[0], pod[1]])
-    # pods_table_formatted = tabulate(
-    #     pods_to_delete, headers=["Pod Namespace", "Pod Name"], tablefmt="grid"
-    # )
-    pods_table_formatted = "Pod Namespace, Pod Name\n"
-    for row in pods_table_formatted:
-        pods_table_formatted += f"{row[0]}, {row[1]}\n"
-
-    # Get Pod Statuses
-    pod_status_list = get_pod_statuses(client, namespaces_to_check)
-    # pod_status_table = tabulate(
-    #     pod_status_list, headers=["Namespace", "Pod Name", "Status", "Reason"], tablefmt="grid"
-    # )
-    pod_status_table = "Namespace, Pod Name, Status, Reason\n"
-    for row in pod_status_list:
-        pod_status_table += f"{row[0]}, {row[1]}, {row[2]}, {row[3]}\n"
-
-    # Get Deployment Config Statuses
-    deployment_config_status_list = get_deployment_config_statuses(client, namespaces_to_check)
-    # deployment_config_status_table = tabulate(
-    #     deployment_config_status_list, headers=["Namespace", "DeploymentConfig Name", "Status"], tablefmt="grid"
-    # )
-    deployment_config_status_table = "Namespace, DeploymentConfig Name, Status\n"
-    for row in deployment_config_status_list:
-        deployment_config_status_table += f"{row[0]}, {row[1]}, {row[2]}\n"
-    return templates.TemplateResponse(
-        "delete_stale_images.html",
-        {
-            "request": request,
-            "stale_images": image_table_formatted,
-            "deployment_configs_to_delete": deployment_configs_table_formatted,
-            "pods_to_delete": pods_table_formatted,
-            "recent_images": recent_images_table_formatted,
-            "openshift_cluster_urls": OpenShiftClusterURLs,
-            "selected_cluster_url": openshift_cluster_url,
-            "repositories": repositories,
-            "selected_repository_url": repository_url,
-            "skip_tags": skip_tags,
-            "delete_operation": delete_operation,
-            "keep_most_recent": keep_most_recent,
-            "pod_statuses": pod_status_table,
-            "deployment_config_statuses": deployment_config_status_table,
-            "deleted_pods_by_status": deleted_pods_by_status,
-            "deleted_deployment_configs_by_status": deleted_deployment_configs_by_status
-        },
-    )
+Recommended Monitoring & Observability Approach for Sourcegraph in OpenShift
+To monitor Sourcegraph effectively in an OpenShift environment, you should use a multi-layer observability strategy. This includes metrics, logs, traces, and optionally, application-level instrumentation. Below is a layered and practical approach tailored to Sourcegraph's architecture and typical enterprise security/compliance constraints.
+
+ 1. Built-in Sourcegraph Observability
+Sourcegraph exposes internal metrics and logs via:
+
+ a. Prometheus Metrics
+Sourcegraph services (like frontend, gitserver, searcher, zoekt, etc.) expose Prometheus metrics at /metrics.
+
+You can deploy Prometheus Operator in OpenShift and scrape metrics using ServiceMonitor resources.
+
+Example endpoint:
+
+php-template
+Copy
+Edit
+http://<sourcegraph-service>:<port>/metrics
+ b. Grafana Dashboards
+Sourcegraph provides prebuilt dashboards:
+
+Code intelligence latency
+
+Search performance
+
+Repository cloning
+
+Gitserver queue times
+
+You can import dashboards from Sourcegraph’s GitHub: https://github.com/sourcegraph/sourcegraph/tree/main/monitoring
+
+2. Cluster-Level Monitoring via OpenShift Prometheus
+OpenShift comes with Monitoring stack (Prometheus, Alertmanager, Grafana):
+
+Monitor pod CPU, memory, restarts, disk usage
+
+Integrate Sourcegraph services as targets for Prometheus scraping
+
+Enable custom project monitoring:
+
+yaml
+Copy
+Edit
+spec:
+  monitoring:
+    enabled: true
+Add ServiceMonitor:
+
+yaml
+Copy
+Edit
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sourcegraph
+  namespace: sourcegraph
+spec:
+  selector:
+    matchLabels:
+      app: sourcegraph
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+3. Log Aggregation (ELK / Loki / Splunk / Fluentd)
+Centralized logging is crucial.
+
+Options:
+Tool	Integration
+Fluentd / Fluent Bit	Ship logs to Elasticsearch or Splunk
+Loki	Promtail reads pod logs and stores in Loki
+OpenShift EFK stack	Use ClusterLogForwarder to route logs
+
+Best Practice: Tag logs with namespace, pod, container, and env for Splunk or Kibana filtering.
+
+4. Distributed Tracing (Optional / Advanced)
+If needed, integrate tracing:
+
+Tool	Compatibility
+Jaeger / OpenTelemetry	Can be integrated with custom Sourcegraph builds
+Dynatrace / New Relic / AppDynamics	Works if your containers allow agents or via service-level integration
+
+Note: Sourcegraph does not come with native OpenTelemetry support for all services.
+
+5. Dynatrace (Optional / Enterprise APM)
+If using Dynatrace:
+
+Use OneAgent Operator on OpenShift for infrastructure and container insights.
+
+Avoid deep container injection unless Sourcegraph container base images allow it.
+
+Dynatrace K8s dashboard + logs + infra + process monitoring is usually sufficient.
+
+6. Alerting
+Use Prometheus Alerts + Alertmanager or integrate with external systems:
+
+Slack / Teams alerts
+
+PagerDuty integration
+
+CPU/memory usage
+
+High response time or failed searches
+
+Gitserver queue backlogs
+
+7. Custom Dashboards
+Use Grafana to create:
+
+Repo clone success rate
+
+Search latency trends
+
+User activity
+
+Gitserver disk queue
+
