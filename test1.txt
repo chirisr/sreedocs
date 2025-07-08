@@ -1,76 +1,342 @@
-OpenShift Image and Resource Management API
-This API helps you manage container images and related resources (like Pods and DeploymentConfigs) within your OpenShift cluster. It's designed to help you clean up old or unused images and keep your OpenShift environment tidy.
-Core Functionality
-The API provides the following key functions:
-Listing Stale Images: Find container images in your OpenShift registry that are older than a specified number of days.
-Deleting Stale Images: Remove the stale images identified in the listing. Optionally, delete associated Pods and DeploymentConfigs that are using those old images.
-Resource Management: Identify and manage Pods and DeploymentConfigs related to stale images.
-Customization:
-Filter operations by OpenShift namespace.
-Skip specific image tags from deletion.
-Keep a specified number of the most recent images.
-API Endpoints
-The API consists of the following endpoints:
-GET /list-stale-images/
-Lists stale images, pods, and deployment configs.
-Also lists pods and deployment configs with specific statuses.
-Parameters:
-repository_url (str, required): URL of the image repository (e.g., one of the repositories defined in your configuration).
-image_id (str, required): ID of the image (e.g., 'my-app').
-image_name (str, required): Name of the image (e.g., 'my-image').
-tag_name (str, optional): Tag name to filter images. Can be a single tag or a comma-separated list.
-remove_older_than (int, optional): Remove images older than this many days (default: 30).
-filter_namespace (str, optional): Filter resources by namespace.
-openshift_cluster_url (str, optional): URL of the OpenShift cluster (default: Uses a pre-defined cluster URL).
-skip_tags (List[str], optional): List of tags to skip during deletion.
-keep_most_recent (int, optional): Number of recent images to keep. 0 to disable.
-Returns: HTML page displaying:
-Stale images
-DeploymentConfigs to delete
-Pods to delete
-Recent images
-Pod statuses
-Deployment config statuses
-DELETE /delete-stale-images/
-Deletes stale images, pods, and deployment configs.
-Parameters:
-repository_url (str, required): URL of the image repository.
-image_id (str, required): ID of the image.
-image_name (str, required): Name of the image.
-tag_name (str, optional): Tag name to clean.
-remove_older_than (int, required): Remove images older than this many days.
-filter_namespace (str, optional): Filter resources by namespace.
-delete_operation (bool, optional): Enable deletion of images, pods, and deployment configs (default: True).
-openshift_cluster_url (str, required): URL of the OpenShift cluster.
-skip_tags (List[str], required): Comma-separated list of tags to skip.
-keep_most_recent (int, optional): Number of recent images to keep. 0 to disable.
-Returns: HTML page displaying the results of the deletion operation.
-Key Features and Concepts
-Stale Image: An image is considered stale if its creation date is older than the specified remove_older_than value.
-Namespaces: OpenShift namespaces allow you to organize projects. This API lets you filter operations by namespace to target specific projects.
-Image Identification: Images are identified by their repository URL, image ID, image name, and tag.
-Resource Cleanup: The API can automatically identify and delete Pods and DeploymentConfigs that use stale images, helping to reclaim resources.
-Configuration: The API relies on an OpenShift ConfigMap and Secret for configuration:
-ConfigMap: Stores the Artifactory and registry URLs.
-Secret: Stores authentication credentials for the registry.
-Authentication: The API uses a registry token for authentication when interacting with the OpenShift container registry.
-OpenShift Client: The API uses the OpenShift client library (OCPClient) to interact with the OpenShift cluster.
-How to Use the API
-Deploy the API: Deploy this API within your OpenShift cluster. It will need to be able to access the OpenShift API, the container registry, and any Artifactory instance you are using.
-Configure the API:
-Create a ConfigMap with the artifactory_url and registry_url.
-Create a Secret with the registry authentication token.
-Use the Endpoints: Use the GET and DELETE endpoints to list and delete stale images, respectively. You can use a web browser, curl, or an HTTP client library to interact with the API.
-Example Usage
-To list stale images:
-GET /list-stale-images/?repository_url=<repository_url>&image_id=<image_id>&image_name=<image_name>&remove_older_than=30&filter_namespace=<namespace>
+To monitor Sourcegraph using Splunk, you can collect logs and metrics from Sourcegraph containers, analyze application health, and alert on anomalies or failures. Since you deployed Sourcegraph via Helm on OpenShift (or Kubernetes), logs are likely available from container stdout/stderr, and if configured, application logs.
 
+🔍 Key Things to Monitor in Splunk for Sourcegraph
+1. Application Logs
+Captured from Sourcegraph pods: frontend, gitserver, repo-updater, searcher, etc.
 
-To delete stale images:
-DELETE /delete-stale-images/?repository_url=<repository_url>&image_id=<image_id>&image_name=<image_name>&remove_older_than=30&filter_namespace=<namespace>&delete_operation=True
+Errors (level=error)
 
+Warnings
 
-Important Considerations
-Permissions: Ensure that the API has the necessary permissions to access the OpenShift API, container registry, and Artifactory.
-Deletion: Use the delete functionality with caution, as it can permanently remove images, Pods, and DeploymentConfigs. Test in a non-production environment first.
-Tag Management: Be mindful of the tags you are deleting, as deleting a tag may affect deployments that rely on that tag.
+Stack traces
+
+Panics
+
+Request failures
+
+2. Search Performance
+Search duration, slow queries, and timeouts.
+
+3. Repo Synchronization
+From repo-updater logs:
+
+Sync failures
+
+External service issues (GitHub, GitLab)
+
+4. Gitserver Operations
+Cloning errors
+
+Disk space issues
+
+Timeout issues
+
+5. Indexer Logs (if using Code Intelligence)
+Indexing job failures
+
+6. User Activity
+From frontend logs:
+
+Sign-ins
+
+Permissions errors
+
+Audit logs (if enabled)
+
+7. System Health
+Pod restarts
+
+Resource limits exceeded
+
+OOMKilled
+
+📥 Sending Logs to Splunk
+Assuming you're forwarding logs via Fluentd / Fluent Bit / Splunk Connect for Kubernetes, configure filters for Sourcegraph pod logs to forward to a dedicated Splunk index (e.g., sourcegraph_logs).
+
+yaml
+Copy
+Edit
+# Example Fluent Bit filter
+[FILTER]
+    Name         kubernetes
+    Match        sourcegraph.*
+    Kube_Tag_Prefix sourcegraph
+    Merge_Log    On
+    Keep_Log     On
+📊 Example Splunk Queries
+Below are sample queries by category. Make sure your index is sourcegraph_logs or whatever name you assigned.
+
+1. Error Logs
+spl
+Copy
+Edit
+index=sourcegraph_logs log_level=ERROR
+| stats count by pod_name, component, log_level
+2. Failed Gitserver Clones
+spl
+Copy
+Edit
+index=sourcegraph_logs component=gitserver "failed to clone"
+| stats count by repo, host, _time
+3. Repo Synchronization Failures
+spl
+Copy
+Edit
+index=sourcegraph_logs component=repo-updater "sync" "error"
+| rex "repoName=(?<repo>[^,]+)"
+| stats count by repo, _time
+4. Slow Search Queries
+spl
+Copy
+Edit
+index=sourcegraph_logs component=frontend "search" duration>1000ms
+| rex "duration=(?<duration>\d+)ms"
+| where tonumber(duration) > 1000
+| stats avg(duration) as avgDuration, count by user, query
+5. User Sign-ins and Failures
+spl
+Copy
+Edit
+index=sourcegraph_logs component=frontend "login"
+| rex "user=\"(?<user>[^\"]+)\""
+| stats count by user, result, _time
+6. Alerts for Pod Crashes or Restarts
+spl
+Copy
+Edit
+index=kubernetes_logs OR index=openshift_logs
+source="/var/log/containers/*sourcegraph*.log"
+("CrashLoopBackOff" OR "OOMKilled")
+| stats count by pod_name, namespace
+7. Disk Issues in Gitserver
+spl
+Copy
+Edit
+index=sourcegraph_logs component=gitserver ("no space left" OR "disk full")
+| stats count by pod_name, _time
+8. Audit or Permission Errors
+spl
+Copy
+Edit
+index=sourcegraph_logs component=frontend ("permission denied" OR "unauthorized")
+| stats count by user, route, _time
+✅ Additional Recommendations
+Enable structured logging in Sourcegraph components if not already enabled (JSON logs make parsing easier in Splunk).
+
+Set up dashboards in Splunk for:
+
+Error trends
+
+User activity
+
+Repo sync status
+
+Search performance
+
+Set alerts for:
+
+Spike in error rate
+
+Search latency > threshold
+
+Repo sync failures
+
+Unauthorized access
+
+If you can share the log format or an actual log line from your Splunk, I can help you write custom rex expressions or dashboards tailored to your deployment.
+
+What to Monitor in Splunk for Sourcegraph on OpenShift
+When monitoring Sourcegraph on OpenShift with Splunk, you'll generally be interested in two main categories of data:
+
+Sourcegraph Application Logs and Metrics: These provide insights into the health, performance, and user activity within Sourcegraph itself.
+
+OpenShift Infrastructure Logs and Metrics: These cover the underlying cluster components (pods, nodes, networking, storage) that Sourcegraph relies on.
+
+Sourcegraph-Specific Monitoring:
+Application Logs:
+
+Errors and Warnings: Critical for identifying issues with Sourcegraph services (e.g., frontend, searcher, gitserver, repo-updater).
+
+User Activity: Login events, search queries, code navigation actions, repository cloning, batch changes. This helps understand usage patterns and potential performance bottlenecks related to user load.
+
+Configuration Changes: Auditing changes to Sourcegraph settings.
+
+Background Job Status: Success/failure of operations like repository indexing, LSIF processing, etc.
+
+Authentication/Authorization: Failed login attempts, permission errors.
+
+Application Metrics (often exposed via Prometheus and then forwarded to Splunk):
+
+Service Uptime/Availability: Is each Sourcegraph service running and responsive?
+
+Request Latency: How long do various Sourcegraph operations take (e.g., search queries, file fetches)?
+
+Error Rates: Number of HTTP 5xx errors, internal service errors.
+
+Resource Utilization: CPU, memory, disk I/O, network usage for each Sourcegraph pod.
+
+Search Performance: Query times, number of search results, search timeouts.
+
+Gitserver Performance: Git clone/fetch times, disk usage on gitservers.
+
+Repo Updater Performance: How quickly repositories are updated.
+
+Database Performance: Query execution times, connection pool usage.
+
+Cache Hit Ratios: Effectiveness of various caches within Sourcegraph.
+
+OpenShift Infrastructure Monitoring:
+Pod Logs: All logs from containers running within Sourcegraph pods. This is crucial for debugging container-level issues.
+
+Node Metrics: CPU, memory, disk, and network utilization of the OpenShift nodes hosting Sourcegraph.
+
+Kubernetes Events: Events like pod evictions, OOMKills, failed scheduled pods, volume issues.
+
+Networking: Network policy issues, ingress controller errors, DNS resolution failures.
+
+Storage: Persistent Volume (PV) and Persistent Volume Claim (PVC) status, storage performance.
+
+Control Plane Metrics (if you have access): API server, etcd, scheduler, controller-manager health.
+
+How to Do It (Data Ingestion into Splunk)
+Since you've already deployed Sourcegraph with Helm on OpenShift and created a Splunk index, the primary challenge is getting the data from OpenShift to Splunk.
+
+Sourcegraph itself typically exposes metrics via Prometheus. OpenShift also generates a lot of valuable log and metric data. You'll generally use one of these methods to send data to Splunk:
+
+Splunk Connect for Kubernetes (or similar agents): This is the most recommended and robust approach for OpenShift. It typically involves deploying a Splunk agent (like Splunk Connect for Kubernetes) directly into your OpenShift cluster. This agent is designed to:
+
+Collect container logs: It gathers logs from all pods, enriches them with Kubernetes metadata (pod name, namespace, labels, etc.), and forwards them to Splunk via HTTP Event Collector (HEC).
+
+Collect Prometheus metrics: It can scrape Prometheus endpoints (like those exposed by Sourcegraph services) and convert them into Splunk metrics, sending them to Splunk's metrics index.
+
+Collect Kubernetes events: It can capture events from the Kubernetes API.
+
+Collect node-level metrics: It can also collect system-level metrics from the underlying nodes.
+
+Configuration: You'll configure the Splunk Connect for Kubernetes agent (often via a Helm chart itself) with your Splunk HEC endpoint, token, and the index you want to use. You'll specify which namespaces to monitor (e.g., the Sourcegraph namespace).
+
+Custom Log Forwarding: If you don't use a dedicated Splunk agent for Kubernetes, you might need to:
+
+Configure OpenShift's built-in logging: OpenShift often has its own logging stack (e.g., using Fluentd/Fluent Bit). You might be able to configure this existing stack to forward logs to your Splunk HEC. This requires understanding OpenShift's logging aggregation and forwarding mechanisms.
+
+Directly configure Sourcegraph to send logs: While less common for metrics, some applications can be configured to directly send their logs to a Splunk HEC endpoint. However, this usually means missing out on the rich Kubernetes metadata that a dedicated agent provides.
+
+Key Splunk Configuration:
+
+HTTP Event Collector (HEC): Ensure HEC is enabled and configured in your Splunk instance, with a dedicated token for Sourcegraph data. This is the primary way data will be ingested.
+
+Indexes: You've already created an index. Make sure your HEC is configured to send data to this index. Consider separate indexes for logs and metrics if your Splunk setup benefits from that.
+
+Sourcetypes: When data is ingested, it's important to assign appropriate sourcetypes for proper parsing and field extraction. A good Kubernetes agent will typically set these automatically based on the log format (e.g., kube:container:json, kube:event).
+
+Example Splunk Queries
+Assuming your logs are being ingested with relevant index, sourcetype, and Kubernetes metadata (like kubernetes.namespace_name, kubernetes.pod_name, kubernetes.container_name). Replace your_sourcegraph_index with the actual name of your Splunk index.
+
+Sourcegraph Application Logs
+Errors and Warnings from all Sourcegraph Services:
+
+Code snippet
+
+index=your_sourcegraph_index kubernetes.namespace_name="sourcegraph" (level="error" OR level="warn")
+| table _time, kubernetes.pod_name, kubernetes.container_name, level, message
+| sort -_time
+Count of Errors by Sourcegraph Service (Container):
+
+Code snippet
+
+index=your_sourcegraph_index kubernetes.namespace_name="sourcegraph" level="error"
+| stats count by kubernetes.container_name
+| sort -count
+User Login Activity:
+
+Code snippet
+
+index=your_sourcegraph_index kubernetes.namespace_name="sourcegraph" message="User * logged in"
+| rex "User (?<username>\w+) logged in"
+| table _time, username, message, kubernetes.pod_name
+Note: The message pattern might vary slightly depending on Sourcegraph's exact logging.
+
+Slow Search Queries (if Sourcegraph logs provide query duration):
+
+Code snippet
+
+index=your_sourcegraph_index kubernetes.namespace_name="sourcegraph" kubernetes.container_name="searcher" message="Search query completed in *"
+| rex "Search query completed in (?<duration>\d+\.?\d*)s"
+| where duration > 5.0 // Adjust threshold as needed
+| table _time, duration, message, kubernetes.pod_name
+| sort -duration
+Repository Update Failures:
+
+Code snippet
+
+index=your_sourcegraph_index kubernetes.namespace_name="sourcegraph" kubernetes.container_name="repo-updater" message="failed to update repository"
+| table _time, message, kubernetes.pod_name
+Sourcegraph Application Metrics (assuming Prometheus metrics are forwarded)
+Splunk's metrics store often uses a metric_name field.
+
+Average CPU Utilization of Sourcegraph Frontend:
+
+Code snippet
+
+| mstats avg(cpu_usage_seconds_total) WHERE index=your_sourcegraph_metrics_index kubernetes.container_name="frontend"
+| timechart span=5m avg(cpu_usage_seconds_total) by kubernetes.pod_name
+Note: cpu_usage_seconds_total is a common Prometheus metric. The exact metric names will depend on what Sourcegraph exposes and how your Splunk agent translates them.
+
+HTTP Request Errors (5xx) for Sourcegraph:
+
+Code snippet
+
+| mstats sum(http_request_errors_total) WHERE index=your_sourcegraph_metrics_index kubernetes.namespace_name="sourcegraph" http_status_code="5xx"
+| timechart span=1m sum(http_request_errors_total) by kubernetes.container_name
+Note: Metric names like http_request_errors_total are examples. Refer to Sourcegraph's Prometheus metrics documentation for exact names.
+
+Search Latency Over Time:
+
+Code snippet
+
+| mstats avg(search_latency_seconds) WHERE index=your_sourcegraph_metrics_index kubernetes.container_name="searcher"
+| timechart span=5m avg(search_latency_seconds)
+OpenShift Infrastructure Monitoring
+Pod Restarts in Sourcegraph Namespace:
+
+Code snippet
+
+index=your_sourcegraph_index sourcetype="kube:event" kubernetes.namespace_name="sourcegraph" message="*restarting*"
+| stats count by kubernetes.pod_name
+| sort -count
+Nodes with High CPU Utilization (relevant for Sourcegraph performance):
+
+Code snippet
+
+| mstats avg(node_cpu_utilization) WHERE index=your_openshift_metrics_index
+| timechart span=1m avg(node_cpu_utilization) by host
+| where avg(node_cpu_utilization) > 0.8 // 80% utilization
+Note: node_cpu_utilization is an example. The actual metric name for node CPU might vary (e.g., kubernetes.node.cpu.usage_rate). Your OpenShift monitoring setup sending to Splunk will define these.
+
+Overall Log Volume from Sourcegraph Pods:
+
+Code snippet
+
+index=your_sourcegraph_index kubernetes.namespace_name="sourcegraph"
+| timechart span=1h count by kubernetes.container_name
+Failed Persistent Volume Claims (PVCs) for Sourcegraph:
+
+Code snippet
+
+index=your_sourcegraph_index sourcetype="kube:event" message="*PersistentVolumeClaim*" (status="failed" OR status="pending") kubernetes.namespace_name="sourcegraph"
+| table _time, kubernetes.pod_name, message
+Tips for Effective Monitoring with Splunk
+Dashboards: Once you have your queries, create Splunk dashboards to visualize key metrics and logs. This provides an at-a-glance view of your Sourcegraph health.
+
+Alerts: Set up Splunk alerts for critical conditions (e.g., high error rates, prolonged high CPU, pod restarts). Configure these to notify your operations team.
+
+Field Extraction: Ensure proper field extraction for your Sourcegraph logs. This makes querying much easier and more powerful. If logs are JSON, Splunk can often extract fields automatically.
+
+Context: When investigating an issue, correlate Sourcegraph logs/metrics with OpenShift infrastructure data. Splunk's ability to search across different data sources in a single query is powerful here.
+
+Sourcegraph Documentation: Refer to Sourcegraph's official documentation on observability (metrics and dashboards). While they focus on Grafana/Prometheus, the metrics they expose are the same, and you'll just be ingesting them into Splunk instead.
+
+Splunk Best Practices: Follow general Splunk best practices for index design, data retention, and performance.
+
+By combining Sourcegraph's internal telemetry with OpenShift's infrastructure insights in Splunk, you'll have a comprehensive view of your Sourcegraph deployment's health and performance.
+
