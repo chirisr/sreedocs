@@ -1,6 +1,6 @@
 To monitor Sourcegraph using Splunk, you can collect logs and metrics from Sourcegraph containers, analyze application health, and alert on anomalies or failures. Since you deployed Sourcegraph via Helm on OpenShift (or Kubernetes), logs are likely available from container stdout/stderr, and if configured, application logs.
 
-🔍 Key Things to Monitor in Splunk for Sourcegraph
+Key Things to Monitor in Splunk for Sourcegraph
 1. Application Logs
 Captured from Sourcegraph pods: frontend, gitserver, repo-updater, searcher, etc.
 
@@ -50,12 +50,11 @@ Resource limits exceeded
 
 OOMKilled
 
-📥 Sending Logs to Splunk
+Sending Logs to Splunk
 Assuming you're forwarding logs via Fluentd / Fluent Bit / Splunk Connect for Kubernetes, configure filters for Sourcegraph pod logs to forward to a dedicated Splunk index (e.g., sourcegraph_logs).
 
 yaml
-Copy
-Edit
+
 # Example Fluent Bit filter
 [FILTER]
     Name         kubernetes
@@ -63,7 +62,7 @@ Edit
     Kube_Tag_Prefix sourcegraph
     Merge_Log    On
     Keep_Log     On
-📊 Example Splunk Queries
+Example Splunk Queries
 Below are sample queries by category. Make sure your index is sourcegraph_logs or whatever name you assigned.
 
 1. Error Logs
@@ -74,53 +73,47 @@ index=sourcegraph_logs log_level=ERROR
 | stats count by pod_name, component, log_level
 2. Failed Gitserver Clones
 spl
-Copy
-Edit
+
 index=sourcegraph_logs component=gitserver "failed to clone"
 | stats count by repo, host, _time
 3. Repo Synchronization Failures
 spl
-Copy
-Edit
+
 index=sourcegraph_logs component=repo-updater "sync" "error"
 | rex "repoName=(?<repo>[^,]+)"
 | stats count by repo, _time
 4. Slow Search Queries
 spl
-Copy
-Edit
+
 index=sourcegraph_logs component=frontend "search" duration>1000ms
 | rex "duration=(?<duration>\d+)ms"
 | where tonumber(duration) > 1000
 | stats avg(duration) as avgDuration, count by user, query
 5. User Sign-ins and Failures
 spl
-Copy
-Edit
+
 index=sourcegraph_logs component=frontend "login"
 | rex "user=\"(?<user>[^\"]+)\""
 | stats count by user, result, _time
 6. Alerts for Pod Crashes or Restarts
 spl
-Copy
-Edit
+
 index=kubernetes_logs OR index=openshift_logs
 source="/var/log/containers/*sourcegraph*.log"
 ("CrashLoopBackOff" OR "OOMKilled")
 | stats count by pod_name, namespace
 7. Disk Issues in Gitserver
 spl
-Copy
-Edit
+
 index=sourcegraph_logs component=gitserver ("no space left" OR "disk full")
 | stats count by pod_name, _time
 8. Audit or Permission Errors
 spl
-Copy
-Edit
+
 index=sourcegraph_logs component=frontend ("permission denied" OR "unauthorized")
 | stats count by user, route, _time
-✅ Additional Recommendations
+
+Additional Recommendations
 Enable structured logging in Sourcegraph components if not already enabled (JSON logs make parsing easier in Splunk).
 
 Set up dashboards in Splunk for:
@@ -143,7 +136,7 @@ Repo sync failures
 
 Unauthorized access
 
-If you can share the log format or an actual log line from your Splunk, I can help you write custom rex expressions or dashboards tailored to your deployment.
+
 
 What to Monitor in Splunk for Sourcegraph on OpenShift
 When monitoring Sourcegraph on OpenShift with Splunk, you'll generally be interested in two main categories of data:
