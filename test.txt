@@ -1,116 +1,66 @@
-Recommended Monitoring & Observability Approach for Sourcegraph in OpenShift
-To monitor Sourcegraph effectively in an OpenShift environment, you should use a multi-layer observability strategy. This includes metrics, logs, traces, and optionally, application-level instrumentation. Below is a layered and practical approach tailored to Sourcegraph's architecture and typical enterprise security/compliance constraints.
+1. Deployment Validation
+Test Case	Description	Command / Tool	Expected Result
+Check Helm release status	Verify Sourcegraph was installed correctly	helm list -n <namespace>	Status: deployed
+Check pods status	Ensure all pods are running	kubectl get pods -n <namespace>	All pods in Running or Completed state
+Check services	Ensure services are created	kubectl get svc -n <namespace>	All relevant services (e.g., sourcegraph-frontend) are exposed
+Route/Ingress (if configured)	Check if ingress/route is accessible	curl https://<sourcegraph-url>	HTTP 200 OK or UI response
 
- 1. Built-in Sourcegraph Observability
-Sourcegraph exposes internal metrics and logs via:
+2. UI Accessibility & Login
+Test Case	Description	How to Test	Expected Result
+UI opens	Access Sourcegraph via browser	Go to https://<sourcegraph-url>	Sourcegraph UI loads
+Create admin	Register admin user if first time	Through UI	Admin created successfully
+Admin login	Login with admin credentials	Through UI	Redirected to dashboard
 
- a. Prometheus Metrics
-Sourcegraph services (like frontend, gitserver, searcher, zoekt, etc.) expose Prometheus metrics at /metrics.
+3. Core Functional Test Cases
+Test Case	Description	How to Test	Expected Result
+Add Git repo	Connect to external Git (GitHub/GitLab)	Admin > Repositories > Add repository	Repo added and indexed
+Search code	Run sample search query	Top search bar (e.g., func main)	Results displayed
+Code browsing	Navigate repository tree	Click on a file	Code visible and clickable
+Syntax highlighting	Check language support	Open .go, .py, .js files	Highlighted properly
 
-You can deploy Prometheus Operator in OpenShift and scrape metrics using ServiceMonitor resources.
+4. Configuration Checks
+Test Case	Description	Where to Check	Expected Result
+Site configuration	Validate base URL, email settings, etc.	Admin > Site Configuration	Configurations saved and validated
+External services	Check GitHub/GitLab connections	Admin > External Services	Connections are active
 
-Example endpoint:
+5. Observability & Logs
+Test Case	Description	How to Test	Expected Result
+Pod logs	Check logs of frontend & search pods	kubectl logs <pod-name> -n <namespace>	No error logs or crashes
+Application logs to Splunk	If integrated, check Splunk index	Use index=sourcegraph* in Splunk	Logs from all Sourcegraph pods appear
+Alerts and metrics	Check if Grafana/Prometheus dashboard exists (if set up)	Access monitoring stack	Metrics are visible and updating
 
-php-template
+6. Security Validations
+Test Case	Description	How to Test	Expected Result
+HTTPS access	Verify TLS certificate	Browser padlock / curl -v	Valid cert (from Secret or Ingress)
+Auth method	Check if SSO/SAML/OIDC configured (optional)	Admin > Auth	Login method is working correctly
+
+7. Sample Queries for Testing Search
+bash
 Copy
 Edit
-http://<sourcegraph-service>:<port>/metrics
- b. Grafana Dashboards
-Sourcegraph provides prebuilt dashboards:
+# Basic keyword search
+func main
 
-Code intelligence latency
+# Search in specific repo
+repo:^github\.com/sourcegraph/sourcegraph$ file:README
 
-Search performance
+# Symbol search
+type:symbol search
 
-Repository cloning
+# Structural search (if enabled)
+lang:go func ...(...) { ... }
 
-Gitserver queue times
-
-You can import dashboards from Sourcegraph’s GitHub: https://github.com/sourcegraph/sourcegraph/tree/main/monitoring
-
-2. Cluster-Level Monitoring via OpenShift Prometheus
-OpenShift comes with Monitoring stack (Prometheus, Alertmanager, Grafana):
-
-Monitor pod CPU, memory, restarts, disk usage
-
-Integrate Sourcegraph services as targets for Prometheus scraping
-
-Enable custom project monitoring:
-
-yaml
-Copy
-Edit
-spec:
-  monitoring:
-    enabled: true
-Add ServiceMonitor:
-
-yaml
-Copy
-Edit
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: sourcegraph
-  namespace: sourcegraph
-spec:
-  selector:
-    matchLabels:
-      app: sourcegraph
-  endpoints:
-  - port: metrics
-    path: /metrics
-    interval: 30s
-3. Log Aggregation (ELK / Loki / Splunk / Fluentd)
-Centralized logging is crucial.
-
-Options:
-Tool	Integration
-Fluentd / Fluent Bit	Ship logs to Elasticsearch or Splunk
-Loki	Promtail reads pod logs and stores in Loki
-OpenShift EFK stack	Use ClusterLogForwarder to route logs
-
-Best Practice: Tag logs with namespace, pod, container, and env for Splunk or Kibana filtering.
-
-4. Distributed Tracing (Optional / Advanced)
-If needed, integrate tracing:
-
-Tool	Compatibility
-Jaeger / OpenTelemetry	Can be integrated with custom Sourcegraph builds
-Dynatrace / New Relic / AppDynamics	Works if your containers allow agents or via service-level integration
-
-Note: Sourcegraph does not come with native OpenTelemetry support for all services.
-
-5. Dynatrace (Optional / Enterprise APM)
-If using Dynatrace:
-
-Use OneAgent Operator on OpenShift for infrastructure and container insights.
-
-Avoid deep container injection unless Sourcegraph container base images allow it.
-
-Dynatrace K8s dashboard + logs + infra + process monitoring is usually sufficient.
-
-6. Alerting
-Use Prometheus Alerts + Alertmanager or integrate with external systems:
-
-Slack / Teams alerts
-
-PagerDuty integration
-
-CPU/memory usage
-
-High response time or failed searches
-
-Gitserver queue backlogs
-
-7. Custom Dashboards
-Use Grafana to create:
-
-Repo clone success rate
-
-Search latency trends
-
-User activity
-
-Gitserver disk queue
-
+# Regex search
+content:("error:" OR "panic:")
+✅ Sample Results Table (for reporting)
+Test Name	Status	Notes
+Helm deployment	✅	
+Pods running	✅	
+UI accessible	✅	
+Login as admin	✅	
+Add GitHub repo	✅	GitHub token used
+Search code works	✅	
+Logs visible in Splunk	✅	Index: sourcegraph
+HTTPS valid	✅	Cert from OpenShift secret
+Auth via PingSSO	❌	Not enabled yet
+Monitoring metrics visible	✅	Grafana setup done
