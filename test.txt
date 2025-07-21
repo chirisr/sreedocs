@@ -331,3 +331,50 @@ Level of Abstraction vs. Control: Heroku and GAE Standard offer maximum abstract
 Existing Ecosystem: If you're already heavily invested in AWS or GCP, using their respective PaaS offerings will lead to better integration and a unified operational experience.
 
 Compliance & Security: While all three offer robust security, ensure they meet specific banking regulatory requirements, especially regarding data residency and detailed audit trails. For highly sensitive systems, the level of transparency and control over the underlying infrastructure might be a deciding factor.
+
+
+
+                            ┌─────────────────────────────┐
+                            │       Developer Pushes      │
+                            │     Code to GitHub Repo     │
+                            └────────────┬────────────────┘
+                                         │
+                                         ▼
+                             ┌──────────────────────────┐
+                             │ GitHub (Source Control)  │
+                             └────────────┬─────────────┘
+                                          │
+                     ┌────────────────────┼────────────────────┐
+                     │                                            │
+                     ▼                                            ▼
+       ┌──────────────────────────────┐        ┌───────────────────────────────┐
+       │ Heroku CI (optional)         │        │ GitHub Actions CI/CD         │
+       │ - Runs Maven/Gradle build    │        │ - Runs tests, builds         │
+       │ - Runs unit tests            │        │ - Deploys to Heroku via CLI  │
+       └────────────┬─────────────────┘        └────────────┬──────────────────┘
+                    │                                          │
+                    ▼                                          ▼
+        ┌────────────────────────┐               ┌─────────────────────────────┐
+        │ Heroku Build System    │               │ Heroku CLI/API              │
+        │ - Java Buildpack       │◄──────────────┤ - Deploys JAR or Docker     │
+        │ - Builds & packages app│               │ - Manages dynos & config    │
+        └────────────┬───────────┘               └────────────┬────────────────┘
+                     │                                         │
+                     ▼                                         ▼
+             ┌─────────────────────┐                  ┌───────────────────────┐
+             │ Heroku Runtime (Dyno)│                │ Heroku Container Registry│
+             │ - Runs app inside   │                 │ (for Docker deploys)     │
+             │   dyno (container)  │                 └────────────┬────────────┘
+             └──────────┬──────────┘                              │
+                        │                                         ▼
+                        ▼                             ┌────────────────────────┐
+             ┌──────────────────────────┐             │ Docker Push (Optional) │
+             │ Public URL:              │             │ heroku container:push  │
+             │ https://your-app.herokuapp.com         │ heroku container:release│
+             └──────────────────────────┘             └────────────────────────┘
+
+                               ┌────────────────────────────┐
+                               │      Add-ons (Optional)    │
+                               │ - PostgreSQL / Redis       │
+                               │ - Logging, Monitoring      │
+                               └────────────────────────────┘
