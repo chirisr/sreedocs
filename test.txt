@@ -1,104 +1,75 @@
-from fastapi import FastAPI, UploadFile, File, Body, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-from apscheduler.schedulers.background import BackgroundScheduler
-import requests
-import pandas as pd
-import io
+1. Deliverables & Project Execution
 
-app = FastAPI()
+Successfully implemented Cert-Manager for the KUBES application, including certificate issuance, renewal automation, and cluster-level configuration.
 
-scheduler = BackgroundScheduler()
-scheduler.start()
+Developed a Python-based utility to clean up stale container images, improving registry hygiene and reducing storage usage.
 
+Packaged and deployed the utility as an OpenShift container, enabling continuous cleanup and operational efficiency.
 
-@app.get("/stale-images")
-async def get_stale_images(format: str = "json"):
-    # Dummy stale images (replace with registry/openshift logic)
-    data = {
-        "vulnerable_image": {
-            "stale_imagescount": 3,
-            "stale_images": [
-                {"registry": "myregistry.com", "image": "app1", "tag": "v1.0"},
-                {"registry": "myregistry.com", "image": "app2", "tag": "v2.3"},
-                {"registry": "myregistry.com", "image": "app3", "tag": "latest"}
-            ]
-        }
-    }
+Led the end-to-end implementation of Sourcegraph, including:
 
-    if format == "json":
-        return JSONResponse(content=data)
+Proof of Concept (PoC) evaluation
 
-    elif format == "csv":
-        df = pd.DataFrame(data["vulnerable_image"]["stale_images"])
-        df["older_images"] = True
-        stream = io.StringIO()
-        df.to_csv(stream, index=False)
-        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
-        response.headers["Content-Disposition"] = "attachment; filename=stale_images.csv"
-        return response
+Architecture design & sizing
 
+Installation, configuration & environment hardening
 
-@app.post("/delete-stale-images")
-async def delete_stale_images(
-    file: UploadFile = None,
-    json_body: dict = Body(None)
-):
-    df = None
+Documentation and handover for application teams
 
-    if file:
-        df = pd.read_csv(file.file)
+Built and stabilized Dev and QA environments for Sourcegraph, ensuring scalability, security, and production readiness.
 
-    elif json_body:
-        stale_images_list = json_body.get("vulnerable_image", {}).get("stale_images", [])
-        df = pd.DataFrame(stale_images_list)
-        df["older_images"] = True
+2. Quality Engineering & Reliability
 
-    else:
-        raise HTTPException(status_code=400, detail="Provide either CSV file or JSON body")
+Ensured high-quality deployments through automated testing, logging, and monitoring integrations.
 
-    deleted = []
-    for _, row in df.iterrows():
-        if row.get("older_images", True):
-            deleted.append(f"{row['registry']}/{row['image']}:{row['tag']}")
+Introduced cleanup automation via Python, reducing manual effort and eliminating human error.
 
-    return {"deleted_images": deleted}
+Improved Sourcegraph search relevance and performance through:
 
+Indexing optimizations
 
-# --- Scheduler job ---
-def scheduled_cleanup(format: str = "json"):
-    try:
-        # 1. Always fetch new data from GET API
-        resp = requests.get("http://localhost:8000/stale-images", params={"format": format})
-        resp.raise_for_status()
+Repository auto-sync tuning
 
-        if format == "json":
-            data = resp.json()
-            # Directly call delete API with JSON body
-            del_resp = requests.post(
-                "http://localhost:8000/delete-stale-images",
-                json=data
-            )
-        else:  # CSV case
-            del_resp = requests.post(
-                "http://localhost:8000/delete-stale-images",
-                files={"file": ("stale_images.csv", resp.text, "text/csv")}
-            )
+Search configuration enhancements
 
-        del_resp.raise_for_status()
-        print("Scheduler Cleanup Done:", del_resp.json())
+3. Value Creation & Impact
 
-    except Exception as e:
-        print("Scheduler Error:", str(e))
+Enabled organization-wide faster code search and onboarding by deploying Sourcegraph, directly improving developer productivity.
 
+Reduced registry storage costs and improved reliability with the automated stale image cleanup solution.
 
-@app.post("/schedule-cleanup")
-async def schedule_cleanup(interval_minutes: int = 5, format: str = "json"):
-    job = scheduler.add_job(
-        scheduled_cleanup,
-        "interval",
-        minutes=interval_minutes,
-        args=[format],
-        id="stale_cleanup_job",
-        replace_existing=True
-    )
-    return {"message": f"Cleanup job scheduled every {interval_minutes} minutes", "job_id": job.id}
+Improved enterprise security posture by implementing SSO authentication (SAML/OIDC/LDAP) and RBAC for Sourcegraph access control.
+
+Strengthened collaboration with application teams by leading deployment activities and providing technical consulting during integration.
+
+4. Open Source & DevOps Mindset
+
+Embraced open-source tooling (Cert-Manager, Sourcegraph, Kubernetes, OpenShift) to modernize workflows and reduce vendor lock-in.
+
+Established best practices for Kubernetes/OpenShift deployments, CI/CD automation, and cluster-level configurations.
+
+Advocated for reusable components, scripting, and automation to improve engineering efficiency.
+
+5. Innovation & Problem Solving
+
+Delivered a reusable Python-based tool for image lifecycle management.
+
+Designed scalable architectures for Sourcegraph and Kubernetes integrations.
+
+Provided technical guidance to cross-functional teams to adopt new cloud-native solutions.
+
+6. Learning & Skill Development
+
+Successfully completed AWS Solutions Architect – Associate training and certification.
+
+Self-learning and progressing toward AI Fundamentals / Copilot certification, expanding capabilities in AI-assisted development.
+
+Actively upskilled in Kubernetes, OpenShift, DevOps, and automation tooling to stay aligned with future technology needs.
+
+7. Collaboration & Leadership
+
+Took ownership of cross-team coordination during Sourcegraph setup, ensuring alignment with Security, DevOps, SCM, and Application teams.
+
+Provided clear communication, documentation, and technical walkthroughs to enable smooth adoption.
+
+Acted as a technical leader by driving PoCs, architecture decisions, and implementation strategy.
